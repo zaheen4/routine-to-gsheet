@@ -1,0 +1,19 @@
+{
+  "_comment": "IMPORTANT: Rename this file to 'teacher_contact_details.json' after filling in your details.",
+  "_comment_structure": "Use the teacher's initials from the UCAM portal as the key (e.g., 'SS', 'JTT'). Fill in their details accordingly.",
+  "SS": {
+    "FullName": "Sadia Sazzad (Example)",
+    "Phone": "01700000000",
+    "Email": "ss@example.com"
+  },
+  "JTT": {
+    "FullName": "Jarin Tasnim Tamanna (Example)",
+    "Phone": "01800000000",
+    "Email": "jtt@example.com"
+  },
+  "ANOTHER_INITIAL": {
+    "FullName": "Another Teacher's Full Name",
+    "Phone": "Teacher's Phone",
+    "Email": "teacher@example.com"
+  }
+}

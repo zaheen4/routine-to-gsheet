@@ -1,0 +1,26 @@
+# Python specific ignores
+__pycache__/
+venv/
+.venv/
+*.pyc
+
+# Ignore user-specific authentication token for Google
+token.pickle
+
+# This will NOT ignore the ".json.example.txt" template files.
+configs_to_edit/ucam_login_credentials.json
+configs_to_edit/teacher_contact_details.json
+google_cloud_keys/service_account_key.json
+google_cloud_keys/oauth_client_secret.json
+
+# Ignore generated output and temporary folders
+output_of_fetched_routine/
+tmp/
+
+# Ignore the contents of the webdriver folder
+webdriver/*
+!webdriver/.gitkeep
+
+# Random files for personal use
+Fetch_Update_Routine_Auto.bat
+.rough.txt
