@@ -54,7 +54,6 @@ project_root/
 |   |-- oauth_client_secret.json.example
 |
 |-- output_of_fetched_routine/  # Default location for the generated schedule data.
-|-- webdriver/                  # Directory for WebDriver executables.
 |
 |-- requirements.txt            # Lists required Python packages.
 |-- token.pickle                # Automatically created to store Google authentication.
@@ -89,29 +88,14 @@ Using a virtual environment is recommended to keep project dependencies isolated
     pip install -r requirements.txt
     ```
 
-### Step 3: Set Up Your Browser Driver
-The script requires a WebDriver to control the browser programmatically.
+### Step 3: Set Up Your Browser 
 
-* **First, select your browser in the script:**
+* **Select your browser in the script:**
     Open the `routine_scrapper.py` file and edit the `PREFERRED_BROWSER` variable.
 
     ```python
     PREFERRED_BROWSER = "firefox"  # Or change to "chrome"
     ```
-* **Next, download the corresponding driver:**
-    * **For Firefox:** Download GeckoDriver from [Mozilla's GitHub page](https://github.com/mozilla/geckodriver/releases).
-    * **For Chrome:** Download ChromeDriver from the [Chrome for Testing page](https://googlechromelabs.github.io/chrome-for-testing/). Ensure the driver version matches your installed Chrome version.
-* **Finally, place the driver executable:**
-    1.  Move the downloaded `geckodriver` or `chromedriver` file into the `webdriver/` folder.
-    2.  **On macOS/Linux,** make the driver executable by running one of these commands in your terminal:
-
-        ```bash
-        chmod +x webdriver/geckodriver
-        ``` 
-        or 
-        ```bash
-        chmod +x webdriver/chromedriver
-        ```
 
 ### Step 4: Configure UCAM Details
 Provide your user-specific information for the script to use.
