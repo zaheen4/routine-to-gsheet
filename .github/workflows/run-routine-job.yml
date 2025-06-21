@@ -1,0 +1,57 @@
+# .github/workflows/run-routine-job.yml
+
+name: Run Daily Routine Scraper and Formatter
+
+# Controls when the action will run. 
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+  # Runs the job on a schedule (e.g., every 3 days at 1:00 AM UTC)
+  schedule:
+    - cron: '0 1 */3 * *' # This is 7 AM in Bangladesh Standard Time (UTC+6)
+
+jobs:
+  build-and-run:
+    runs-on: ubuntu-latest # Use a standard Linux virtual machine
+
+    steps:
+    # 1. Checkout your repository code
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    # 2. Set up Python environment
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.13' # Choose a Python version
+
+    # 3. Install dependencies from requirements.txt
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # 4. Recreate credential files from GitHub Secrets
+    - name: Create credential files from secrets
+      run: |
+        # Create directories
+        mkdir -p configs_to_edit
+        mkdir -p google_cloud_keys
+
+        # Recreate the JSON files by echoing the secret content into them
+        echo "${{ secrets.UCAM_LOGIN_CREDENTIALS }}" > configs_to_edit/ucam_login_credentials.json
+        echo "${{ secrets.TEACHER_CONTACT_DETAILS }}" > configs_to_edit/teacher_contact_details.json
+        echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}" > google_cloud_keys/service_account_key.json
+        echo "${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}" > google_cloud_keys/oauth_client_secret.json
+        
+        # Recreate the token.pickle file from the base64 encoded secret
+        echo "${{ secrets.TOKEN_PICKLE_B64 }}" | base64 --decode > token.pickle
+        
+    # 5. Run the web scraper script
+    - name: Run Routine Scraper
+      run: python routine_scrapper.py
+
+    # 6. Run the Google Sheet formatter script
+    - name: Run GSheet Formatter
+      run: python gsheet_formatter.py
