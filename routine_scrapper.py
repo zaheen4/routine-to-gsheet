@@ -9,12 +9,15 @@ from bs4 import BeautifulSoup
 import os
 import csv
 import re
+
 # Firefox-specific imports
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from webdriver_manager.firefox import GeckoDriverManager
 # Chrome-specific imports
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
+from webdriver_manager.chrome import ChromeDriverManager
 
 print("Script starting: Imports successful.", flush=True)
 
@@ -23,9 +26,6 @@ print("Script starting: Imports successful.", flush=True)
 # Ensure the corresponding WebDriver (GeckoDriver for Firefox, ChromeDriver for Chrome) is set up.
 PREFERRED_BROWSER = "firefox"  # Or "chrome"
 
-# Paths to WebDrivers - Adjust if your drivers are located elsewhere or not in PATH
-GECKODRIVER_PATH = 'webdriver/geckodriver.exe'  # For Firefox
-CHROMEDRIVER_PATH = 'webdriver/chromedriver.exe' # For Chrome
 
 
 CREDENTIALS_FILE = 'configs_to_edit/ucam_login_credentials.json'
@@ -275,73 +275,46 @@ def main():
         "attendance_dashboard_url": credentials_data["attendance_dashboard_url"]
     }
 
-    # --- WebDriver Initialization (Handles browser choice) ---
+    # --- WebDriver Initialization (Handles browser choice automatically) ---
     options = None
     service = None
     web_driver_class = None
-    driver_name = ""
-    abs_driver_path = "" # Will store the absolute path to the driver executable
 
     print(f"Configuring WebDriver for selected browser: {PREFERRED_BROWSER.upper()}", flush=True)
 
-    if PREFERRED_BROWSER.lower() == "firefox":
-        options = FirefoxOptions()
-        options.add_argument("--headless")
-        # options.add_argument("--window-size=1920,1080") # Optional for headless Firefox
-
-        # Determine absolute path for GeckoDriver
-        abs_driver_path = GECKODRIVER_PATH
-        if not os.path.isabs(GECKODRIVER_PATH):
-            abs_driver_path = os.path.join(BASE_OUTPUT_DIR, GECKODRIVER_PATH)
-
-        driver_name = "GeckoDriver (Firefox)"
-        WebDriverServiceClass = FirefoxService
-        web_driver_class = webdriver.Firefox
-
-    elif PREFERRED_BROWSER.lower() == "chrome":
-        options = ChromeOptions()
-        options.add_argument("--headless")
-        options.add_argument("--window-size=1920,1080") # Often beneficial for headless Chrome
-        options.add_argument("--disable-gpu")          # Recommended for headless Chrome
-        options.add_argument("--no-sandbox")           # Can be necessary in some CI/Docker environments
-        options.add_argument("--disable-dev-shm-usage")# Overcomes limited resource problems in Docker
-
-        # Determine absolute path for ChromeDriver
-        abs_driver_path = CHROMEDRIVER_PATH
-        if not os.path.isabs(CHROMEDRIVER_PATH):
-            abs_driver_path = os.path.join(BASE_OUTPUT_DIR, CHROMEDRIVER_PATH)
-
-        driver_name = "ChromeDriver (Chrome)"
-        WebDriverServiceClass = ChromeService
-        web_driver_class = webdriver.Chrome
-    else:
-        print(f"Fatal Error: Invalid browser choice '{PREFERRED_BROWSER}' in PREFERRED_BROWSER variable. "
-              "Please set it to 'firefox' or 'chrome' in routine_scrapper.py.", flush=True)
-        return
-
-    # Initialize the WebDriver Service (once, before the user loop)
     try:
-        if os.path.exists(abs_driver_path):
-            print(f"Using {driver_name} from: {abs_driver_path}", flush=True)
-            service = WebDriverServiceClass(executable_path=abs_driver_path)
+        if PREFERRED_BROWSER.lower() == "firefox":
+            options = FirefoxOptions()
+            options.add_argument("--headless")
+            print("Setting up automatic WebDriver for Firefox (GeckoDriver)...", flush=True)
+            service = FirefoxService(GeckoDriverManager().install())
+            web_driver_class = webdriver.Firefox
+
+        elif PREFERRED_BROWSER.lower() == "chrome":
+            options = ChromeOptions()
+            options.add_argument("--headless")
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            print("Setting up automatic WebDriver for Chrome (ChromeDriver)...", flush=True)
+            service = ChromeService(ChromeDriverManager().install())
+            web_driver_class = webdriver.Chrome
         else:
-            print(f"Warning: {driver_name} not found at '{abs_driver_path}'. "
-                  f"Attempting to use {driver_name} from system PATH.", flush=True)
-            # Selenium 4+ WebDriverManager can handle this if driver not in PATH,
-            # but explicit path is preferred for consistency.
-            # If Service() is called without executable_path, it expects driver in PATH.
-            service = WebDriverServiceClass()
-    except Exception as e_service_init:
-        print(f"Fatal Error initializing {driver_name} Service: {e_service_init}", flush=True)
-        print(f"Ensure the WebDriver executable ('{os.path.basename(abs_driver_path)}') is correctly installed for {PREFERRED_BROWSER.upper()}, "
-              f"its path ('{abs_driver_path}') is correct in the script, "
-              "or it's available in your system's PATH.", flush=True)
+            print(f"Fatal Error: Invalid browser choice '{PREFERRED_BROWSER}'. Please set it to 'firefox' or 'chrome'.", flush=True)
+            return
+            
+    except Exception as e_driver_setup:
+        print(f"Fatal Error setting up WebDriver for {PREFERRED_BROWSER.upper()}: {e_driver_setup}", flush=True)
+        print("Please ensure the selected browser is installed on your system.", flush=True)
         return
 
     if not web_driver_class or not service or not options:
-         print(f"Fatal Error: WebDriver components (class, service, or options) were not correctly initialized for {PREFERRED_BROWSER.upper()}.", flush=True)
+         print(f"Fatal Error: WebDriver components were not correctly initialized for {PREFERRED_BROWSER.upper()}.", flush=True)
          return
     # --- End of WebDriver Service and Options Initialization ---
+
+    
 
     for user_profile in credentials_data["users"]:
         driver = None # Initialize driver to None for each user iteration
