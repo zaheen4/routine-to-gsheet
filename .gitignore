@@ -17,9 +17,7 @@ google_cloud_keys/oauth_client_secret.json
 output_of_fetched_routine/
 tmp/
 
-# Ignore the contents of the webdriver folder
-webdriver/*
-!webdriver/.gitkeep
+
 
 # Random files for personal use
 Fetch_Update_Routine_Auto.bat
