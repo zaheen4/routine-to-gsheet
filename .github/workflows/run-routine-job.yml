@@ -8,7 +8,7 @@ on:
   push:
     branches:
       - '**' # This makes it run on a push to ANY branch
-      
+
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
@@ -45,13 +45,14 @@ jobs:
         mkdir -p google_cloud_keys
 
         # Recreate the JSON files by echoing the secret content into them
-        echo "${{ secrets.UCAM_LOGIN_CREDENTIALS }}" > configs_to_edit/ucam_login_credentials.json
-        echo "${{ secrets.TEACHER_CONTACT_DETAILS }}" > configs_to_edit/teacher_contact_details.json
-        echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}" > google_cloud_keys/service_account_key.json
-        echo "${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}" > google_cloud_keys/oauth_client_secret.json
+        # Use single quotes to preserve the exact formatting of the multiline JSON
+        echo '${{ secrets.UCAM_LOGIN_CREDENTIALS }}' > configs_to_edit/ucam_login_credentials.json
+        echo '${{ secrets.TEACHER_CONTACT_DETAILS }}' > configs_to_edit/teacher_contact_details.json
+        echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}' > google_cloud_keys/service_account_key.json
+        echo '${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}' > google_cloud_keys/oauth_client_secret.json
         
-        # Recreate the token.pickle file from the base64 encoded secret
-        echo "${{ secrets.TOKEN_PICKLE_B64 }}" | base64 --decode > token.pickle
+        # This line for base64 doesn't need quotes, but adding them is fine
+        echo '${{ secrets.TOKEN_PICKLE_B64 }}' | base64 --decode > token.pickle
         
     # 5. Run the web scraper script
     - name: Run Routine Scraper
