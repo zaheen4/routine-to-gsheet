@@ -1,6 +1,6 @@
 # .github/workflows/run-routine-job.yml
 
-name: Run Daily Routine Scraper and Formatter
+name: Routine Scraper & Formatter - 3 Day Interval
 
 # Controls when the action will run. 
 on:
