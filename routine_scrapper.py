@@ -1,6 +1,7 @@
 import json
 import time
 import subprocess
+import traceback
 import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -12,33 +13,30 @@ import os
 import csv
 import re
 
-# Firefox-specific imports
+# Browser-specific imports
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from webdriver_manager.firefox import GeckoDriverManager
-# Chrome-specific imports
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from webdriver_manager.chrome import ChromeDriverManager
 
-print("Script starting: Imports successful.", flush=True)
+print("Initializing routine scraper...", flush=True)
 
-# --- Configuration ---
-# Browser Choice: "firefox" or "chrome"
-
+# [Configuration]
+# Browser Selection: "chrome" (recommended) or "firefox"
 PREFERRED_BROWSER = "chrome"
 
-
-
+# Path Configuration
 CREDENTIALS_FILE = 'configs_to_edit/ucam_login_credentials.json'
 TEACHER_DETAILS_FILE = 'configs_to_edit/teacher_contact_details.json'
 
-# Output Folder Configuration
+# Output Directory Configuration
 BASE_OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 FORMATTED_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "output_of_fetched_routine")
 TMP_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "tmp")
 
-# Output filenames
+# Output Template Filenames
 ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL = 'attendance_dashboard_{section}.html'
 ATTENDANCE_DATA_CSV_FILENAME_TPL = 'dashboard_data_{section}.csv'
 ATTENDANCE_DATA_JSON_FILENAME_TPL = 'dashboard_data_{section}.json'
@@ -47,84 +45,80 @@ FINAL_ROUTINE_CSV_FILENAME = 'final_combined_routine.csv'
 FINAL_ROUTINE_JSON_FILENAME = 'final_combined_routine.json'
 
 
-# --- Load Credentials ---
+# [Data Loading Functions]
+
 def load_credentials(file_path):
-    """Loads credentials from a JSON file."""
-    print(f"Attempting to load credentials from: {file_path}", flush=True)
+    """
+    Loads and validates UCAM authentication credentials from a JSON source.
+    """
+    print(f"Loading credentials from: {file_path}", flush=True)
     if not os.path.isabs(file_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(script_dir, file_path)
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             credentials = json.load(f)
-        print("Credentials file found and JSON parsed.", flush=True)
+        
         required_top_keys = ["users", "login_url", "attendance_dashboard_url"]
         if not all(key in credentials for key in required_top_keys):
-            missing = [key for key in required_top_keys if key not in credentials]
-            print(f"Error: Credentials file is missing top-level keys: {', '.join(missing)}", flush=True)
+            print(f"Error: Missing top-level keys in {file_path}", flush=True)
             return None
+            
         if not isinstance(credentials["users"], list) or not credentials["users"]:
-            print("Error: 'users' array in credentials file is missing or empty.", flush=True)
+            print("Error: 'users' array is missing or empty.", flush=True)
             return None
+            
         for user in credentials["users"]:
             required_user_keys = ["id", "username", "password", "section_label"]
             if not all(key in user for key in required_user_keys):
-                print(f"Error: A user in credentials file is missing required keys. Expected: {required_user_keys}, Found: {list(user.keys())}", flush=True)
+                print(f"Error: Missing required user keys for ID: {user.get('id')}", flush=True)
                 return None
-        print("Credentials loaded and validated successfully.", flush=True)
+                
         return credentials
-    except FileNotFoundError:
-        print(f"Error: Credentials file '{file_path}' not found.", flush=True)
-        return None
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from '{file_path}'. Check its format.", flush=True)
-        return None
     except Exception as e:
-        print(f"An unexpected error occurred in load_credentials: {e}", flush=True)
+        print(f"Critical error loading credentials: {e}", flush=True)
         return None
 
-# --- Load Teacher Details from Local File ---
 def load_teacher_details_from_file(file_path):
-    """Loads teacher details from a local JSON file."""
-    print(f"Attempting to load teacher details from: {file_path}", flush=True)
+    """
+    Loads teacher contact information from a JSON source.
+    """
     if not os.path.isabs(file_path):
-        # Assuming TEACHER_DETAILS_FILE is relative to the script's directory if not absolute
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(script_dir, file_path)
 
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             teacher_details = json.load(f)
-        print(f"Successfully loaded {len(teacher_details)} teacher entries from {file_path}.", flush=True)
+        print(f"Loaded {len(teacher_details)} teacher entries.", flush=True)
         return teacher_details
     except FileNotFoundError:
-        print(f"Error: Teacher details file '{file_path}' not found. Please create it.", flush=True)
-        return {}
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from '{file_path}'. Please check its format.", flush=True)
+        print(f"Warning: Teacher details file not found at '{file_path}'.", flush=True)
         return {}
     except Exception as e:
-        print(f"An unexpected error occurred in load_teacher_details_from_file: {e}", flush=True)
+        print(f"Unexpected error loading teacher details: {e}", flush=True)
         return {}
 
 
-# --- Parse Data from Attendance Dashboard HTML ---
+# [Parsing Functions]
+
 def parse_attendance_dashboard_data(html_content, user_section_label_tag):
+    """
+    Parses routine data from the UCAM attendance dashboard HTML.
+    """
     soup = BeautifulSoup(html_content, 'html.parser')
     dashboard_entries = []
-    print(f"--- Parsing Attendance Dashboard HTML for user section {user_section_label_tag} ---", flush=True)
 
     main_table = soup.find('table', id="ctl00_MainContainer_gvCourseList")
     if not main_table:
-        print(f"Could not find data table on dashboard for user section {user_section_label_tag}.", flush=True)
+        print(f"Error: Data table not found for section {user_section_label_tag}.", flush=True)
         return dashboard_entries
 
     rows = main_table.find_all('tr')
     if len(rows) < 2:
-        print(f"Dashboard data table for user section {user_section_label_tag} has no data rows.", flush=True)
         return dashboard_entries
 
-    for row_idx, row in enumerate(rows[1:]): # Skip header row
+    for row in rows[1:]:
         cells = row.find_all('td')
         if len(cells) < 5:
             continue
@@ -163,303 +157,303 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
 
         dashboard_entries.append(entry)
 
-    print(f"Extracted {len(dashboard_entries)} entries from dashboard for user section {user_section_label_tag}.", flush=True)
     return dashboard_entries
 
-# --- Save Data Functions ---
+
+# [Persistence Functions]
+
 def save_data_to_file(data, output_dir, filename, file_type='csv'):
+    """
+    Persists data to disk in the specified format.
+    """
     if not data: return
     os.makedirs(output_dir, exist_ok=True)
     output_file_path = os.path.join(output_dir, filename)
 
     if file_type == 'csv':
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-            print(f"CSV data for {filename} must be list of dicts. Got: {type(data)}", flush=True); return
-        # Use a predefined robust set of headers for the final combined routine
+            print(f"Error: Invalid CSV data format for {filename}", flush=True)
+            return
+            
         if "final_combined_routine" in filename:
              fieldnames = ["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"]
-        else: # For other CSVs, derive from data
+        else:
             fieldnames = list(data[0].keys())
 
         try:
             with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-                writer.writeheader(); writer.writerows(data)
-            print(f"Data saved to {output_file_path}", flush=True)
-        except Exception as e: print(f"Error saving CSV {output_file_path}: {e}", flush=True)
+                writer.writeheader()
+                writer.writerows(data)
+            print(f"Exported CSV: {output_file_path}", flush=True)
+        except Exception as e:
+            print(f"Failed to export CSV: {e}", flush=True)
+            
     elif file_type == 'json':
         try:
             with open(output_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            print(f"Data saved to {output_file_path}", flush=True)
-        except Exception as e: print(f"Error saving JSON {output_file_path}: {e}", flush=True)
+            print(f"Exported JSON: {output_file_path}", flush=True)
+        except Exception as e:
+            print(f"Failed to export JSON: {e}", flush=True)
 
-# --- Helper function to perform scraping for a single user ---
+
+# [Web Scraping Logic]
+
 def scrape_dashboard_for_user(driver, user_creds, common_urls):
+    """
+    Executes the scraping workflow for a specific user profile.
+    """
     user_dashboard_data = []
     section_label = user_creds['section_label']
 
-    print(f"\n--- Logging in as {user_creds['id']} (for section: {section_label}) ---", flush=True)
-    driver.get(common_urls['login_url']); time.sleep(1) # Allow page to start loading
-    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "logMain_UserName"))).send_keys(user_creds['username'])
-    WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Password"))).send_keys(user_creds['password'])
-    WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Button1"))).click()
-    # Wait for a known element on the dashboard after login
-    WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.ID, "ctl00_lbtnUserName")))
-    print(f"Successfully logged in as {user_creds['id']}.", flush=True); time.sleep(2) # Brief pause
+    print(f"\n--- Processing User Profile: {user_creds['id']} ({section_label}) ---", flush=True)
+    
+    # 1. Establish context by visiting a neutral site first
+    try:
+        print("Masking entry: Establishing context via Google...", flush=True)
+        driver.get("https://www.google.com")
+        time.sleep(3)
+    except: pass
 
-    print(f"Navigating to Attendance Dashboard for section {section_label}: {common_urls['attendance_dashboard_url']}", flush=True)
-    driver.get(common_urls['attendance_dashboard_url']); time.sleep(2) # Allow page to start loading
+    # 2. Portal Authentication
+    try:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            print(f"Portal access attempt {attempt} to: {common_urls['login_url']}", flush=True)
+            driver.get(common_urls['login_url'])
+            
+            # Allow extended time for Cloudflare background checks
+            time.sleep(15) 
+            page_title = driver.title
+            print(f"Current Page Title: '{page_title}'", flush=True)
+            
+            if "Just a moment" in page_title or "Cloudflare" in page_title or "Attention Required" in page_title:
+                print(f"Cloudflare block persisting. Refreshing session (Attempt {attempt})...", flush=True)
+                time.sleep(5)
+                continue
+            
+            try:
+                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "logMain_UserName")))
+                print("UCAM Login fields detected. Challenge likely bypassed.", flush=True)
+                break
+            except TimeoutException:
+                if attempt == max_attempts:
+                    print("Critical: Failed to bypass Cloudflare after maximum retries.", flush=True)
+                    print("Page Snippet:", driver.page_source[:500], flush=True)
+                    raise TimeoutException("Cloudflare challenge block.")
+                print("Retrying portal access...", flush=True)
+
+        print("Authenticating with student credentials...", flush=True)
+        user_field = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "logMain_UserName")))
+        pass_field = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Password")))
+        login_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Button1")))
+        
+        user_field.send_keys(user_creds['username'])
+        pass_field.send_keys(user_creds['password'])
+        login_btn.click()
+        
+        WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, "ctl00_lbtnUserName")))
+        print(f"User {user_creds['id']} authenticated successfully.", flush=True)
+    except Exception as e:
+        print(f"Authentication Failure: {type(e).__name__} | URL: {driver.current_url}", flush=True)
+        raise e
+
+    # 3. Navigation to Dashboard
+    driver.get(common_urls['attendance_dashboard_url'])
     semester_dropdown_id = "ctl00_MainContainer_ddlHeldIn"
-    # Wait for the original select element to be present
     WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, semester_dropdown_id)))
 
-    # Interact with the Select2 dropdown
-    original_select_element = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, semester_dropdown_id)))
-    options_in_dropdown = original_select_element.find_elements(By.TAG_NAME, "option")
-    # Find the first non-default semester (value not "0")
-    first_semester_text = next((opt.text for opt in options_in_dropdown if opt.get_attribute("value") != "0"), None)
+    original_select = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, semester_dropdown_id)))
+    options = original_select.find_elements(By.TAG_NAME, "option")
+    target_semester = next((opt.text for opt in options if opt.get_attribute("value") != "0"), None)
 
-    if not first_semester_text:
-        raise Exception(f"No actual semester option found in dropdown for section {section_label}.")
+    if not target_semester:
+        raise Exception(f"No valid semester options found for section {section_label}.")
 
-    # Click the Select2 container to open the dropdown
-    s2_container_xpath = f"//select[@id='{semester_dropdown_id}']/following-sibling::span[contains(@class,'select2-container')]//span[contains(@class,'select2-selection--single')]"
-    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_container_xpath))).click()
+    s2_container = f"//select[@id='{semester_dropdown_id}']/following-sibling::span[contains(@class,'select2-container')]"
+    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_container))).click()
 
-    # Click the desired option in the opened Select2 results
-    s2_option_xpath = f"//span[contains(@class, 'select2-results')]//ul[contains(@class, 'select2-results__options')]//li[text()=\"{first_semester_text}\"]"
-    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_option_xpath))).click()
+    s2_option = f"//span[contains(@class, 'select2-results')]//li[text()=\"{target_semester}\"]"
+    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_option))).click()
 
-    print(f"Semester '{first_semester_text}' selected on Attendance Dashboard for section {section_label}.", flush=True); time.sleep(3) # Wait for content to update
+    print(f"Dashboard synchronized for semester: {target_semester}.", flush=True)
+    time.sleep(5) 
 
-    # Wait for the table inside the update panel to be loaded
+    # 4. Content Extraction
     update_panel_id = "ctl00_MainContainer_UpdatePanel02"
     WebDriverWait(driver, 45).until(
         EC.presence_of_element_located((By.XPATH, f"//div[@id='{update_panel_id}']//table[@id='ctl00_MainContainer_gvCourseList']"))
     )
-    dashboard_container = driver.find_element(By.ID, update_panel_id)
-    dashboard_html_content = dashboard_container.get_attribute('innerHTML')
+    
+    dashboard_html = driver.find_element(By.ID, update_panel_id).get_attribute('innerHTML')
 
-    if dashboard_html_content:
+    if dashboard_html:
         os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-        dash_html_file = ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL.format(section=section_label)
-        with open(os.path.join(TMP_OUTPUT_DIR, dash_html_file), 'w', encoding='utf-8') as f:
-            f.write("<html><head><meta charset='utf-8'></head><body>" + dashboard_html_content + "</body></html>")
-
-        user_dashboard_data = parse_attendance_dashboard_data(dashboard_html_content, section_label)
+        user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
+        
         if user_dashboard_data:
-            dash_csv_file = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
-            dash_json_file = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv_file, "csv")
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json_file, "json")
+            dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
+            dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
+            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv, "csv")
+            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
 
-    print(f"Finished processing dashboard for user {user_creds['id']}.", flush=True)
     return user_dashboard_data
 
 def get_chrome_major_version():
-    try:
-        # Tries to get the version from the system
-        output = subprocess.check_output(["google-chrome-stable", "--version"]).decode("utf-8")
-        version = re.search(r"Google Chrome (\d+)", output).group(1)
-        return int(version)
-    except:
-        return None # Fallback to let uc try its default
+    """
+    Attempts to retrieve the installed Chrome version.
+    """
+    for binary in ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]:
+        try:
+            output = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode("utf-8")
+            version_match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
+            if version_match:
+                major_version = int(version_match.group(1))
+                print(f"System Chrome Version: {major_version} (via '{binary}')", flush=True)
+                return major_version
+        except:
+            continue
+    return None
 
 
-# --- Main Script ---
+# [Main Workflow]
+
 def main():
-    print("Executing main() function...", flush=True)
-    credentials_data = load_credentials(CREDENTIALS_FILE)
-    if not credentials_data:
-        print("Failed to load credentials. Exiting.", flush=True); return
+    print("Executing scraper workflow...", flush=True)
+    
+    credentials = load_credentials(CREDENTIALS_FILE)
+    if not credentials:
+        print("Termination: Missing configuration.", flush=True)
+        return
 
-    teacher_details_lookup = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
-    if not teacher_details_lookup: # It returns {} on error, so this check is fine
-        print(f"Warning: Failed to load teacher details from '{TEACHER_DETAILS_FILE}'. "
-              "Full teacher names, phone numbers, and emails might be missing in the output.", flush=True)
-        # Keep teacher_details_lookup as {} (empty dict) to avoid errors later with .get()
-
-    all_dashboard_data_collected = []
+    teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
+    all_collected_data = []
 
     common_urls = {
-        "login_url": credentials_data["login_url"],
-        "attendance_dashboard_url": credentials_data["attendance_dashboard_url"]
+        "login_url": credentials["login_url"],
+        "attendance_dashboard_url": credentials["attendance_dashboard_url"]
     }
 
-
-    for user_profile in credentials_data["users"]:
+    for profile in credentials["users"]:
         driver = None 
-        options = None
-        service = None
-        web_driver_class = None
-
         try:
-            print(f"\n--- Configuring and Creating WebDriver instance for User: {user_profile['id']} ---", flush=True)
+            print(f"\n--- Initializing Session: {profile['id']} ---", flush=True)
 
-            # --- INITIALIZE FRESH OPTIONS FOR EVERY USER ---
             if PREFERRED_BROWSER.lower() == "chrome":
                 options = uc.ChromeOptions()
                 options.add_argument("--window-size=1920,1080")
                 options.add_argument("--disable-gpu")
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
-                web_driver_class = uc.Chrome
                 
-                # Create driver immediately
+                # Enhanced stealth flags
+                options.add_argument("--disable-blink-features=AutomationControlled")
+                options.add_argument("--profile-directory=Default")
+                
                 major_v = get_chrome_major_version()
-                driver = web_driver_class(options=options, version_main=major_v)
+                driver = uc.Chrome(options=options, version_main=major_v)
 
             elif PREFERRED_BROWSER.lower() == "firefox":
                 options = FirefoxOptions()
                 service = FirefoxService(GeckoDriverManager().install())
-                web_driver_class = webdriver.Firefox
-                
-                # Create driver immediately
-                driver = web_driver_class(service=service, options=options)
+                driver = webdriver.Firefox(service=service, options=options)
 
-            # Safety check
             if not driver:
-                print(f"Error: Could not initialize {PREFERRED_BROWSER} for {user_profile['id']}.")
+                print(f"Error: Driver initialization failure for {profile['id']}.", flush=True)
                 continue
 
             driver.implicitly_wait(15)
-            print(f"{PREFERRED_BROWSER.upper()} instance for {user_profile['id']} is ready.", flush=True)
+            user_data = scrape_dashboard_for_user(driver, profile, common_urls)
+            all_collected_data.extend(user_data)
 
-            user_data = scrape_dashboard_for_user(driver, user_profile, common_urls)
-            all_dashboard_data_collected.extend(user_data)
-
-        except WebDriverException as e_driver_instance:
-            print(f"Error creating or using WebDriver instance for user {user_profile['id']}: {e_driver_instance}", flush=True)
-            if driver: # If driver object exists but failed during operation
+        except Exception as e:
+            print(f"Workflow Exception for {profile['id']}: {e}", flush=True)
+            if driver:
                 try:
                     os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-                    error_page_source_path = os.path.join(TMP_OUTPUT_DIR, f"error_page_source_webdriver_fail_{user_profile['id']}.html")
-                    with open(error_page_source_path, "w", encoding="utf-8") as f_err:
-                        f_err.write(driver.page_source)
-                    print(f"Saved page source at WebDriver failure to: {error_page_source_path}", flush=True)
-                except Exception as e_save_source:
-                    print(f"Could not save page source on WebDriver failure: {e_save_source}", flush=True)
-            # Continue to the next user if this one failed critically (e.g., driver couldn't start for them)
-            continue
-        except Exception as e_user_scrape: # Catch other exceptions during this user's processing
-            print(f"An unexpected error occurred during scraping for user {user_profile['id']}: {e_user_scrape}", flush=True)
-            if driver: # Attempt to capture page source if driver was initialized
-                try:
-                    os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-                    error_page_source_path = os.path.join(TMP_OUTPUT_DIR, f"error_page_source_general_error_{user_profile['id']}.html")
-                    with open(error_page_source_path, "w", encoding="utf-8") as f_err:
-                        f_err.write(driver.page_source)
-                    print(f"Saved page source at general error to: {error_page_source_path}", flush=True)
-                except Exception as e_save_source:
-                    print(f"Could not save page source on general error: {e_save_source}", flush=True)
-            # Depending on severity, you might want to 'continue' or 'return'
-            # For now, assume we try next user.
+                    log_path = os.path.join(TMP_OUTPUT_DIR, f"error_log_{profile['id']}.html")
+                    with open(log_path, "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    print(f"Debug log saved: {log_path}", flush=True)
+                except: pass
         finally:
             if driver:
                 driver.quit()
-                print(f"WebDriver session for user {user_profile['id']} ({PREFERRED_BROWSER.upper()}) closed.", flush=True)
+                print(f"Session closed for {profile['id']}.", flush=True)
 
-    # --- Merging and Final Output ---
-    if not all_dashboard_data_collected:
-        print("No dashboard data collected from any user. Cannot generate final routine.", flush=True); return
+    if not all_collected_data:
+        print("Data collection yielded zero results. Aborting export.", flush=True)
+        return
 
-    print("\n--- Combining Data for Final Routine ---", flush=True)
-    final_combined_routine = []
+    print("\n--- Processing Combined Results ---", flush=True)
+    final_routine = []
+    
+    primary_section = credentials["users"][0]["section_label"]
+    secondary_section = credentials["users"][1]["section_label"] if len(credentials["users"]) > 1 else None
 
-    primary_user_section_label = credentials_data["users"][0]["section_label"]
-    friend_section_label = None
-    if len(credentials_data["users"]) > 1:
-        friend_section_label = credentials_data["users"][1]["section_label"]
+    for item in all_collected_data:
+        is_lab = "lab" in item.get("CourseTitle", "").lower()
+        item_section = item.get("UserScrapedSection")
 
-
-    for dash_item in all_dashboard_data_collected:
-        is_lab_course = "lab" in dash_item.get("CourseTitle", "").lower()
-        item_user_section = dash_item.get("UserScrapedSection")
-
-        include_this_item_schedule_one = False
-        include_this_item_schedule_two = False
-
-        if item_user_section == primary_user_section_label:
-            include_this_item_schedule_one = True
-            include_this_item_schedule_two = True
-        elif item_user_section == friend_section_label and is_lab_course:
-            include_this_item_schedule_one = True
-            include_this_item_schedule_two = True
-
-        # Process Schedule One
-        if include_this_item_schedule_one and \
-           ((dash_item.get("ScheduleOne_Day") and not dash_item.get("ScheduleOne_Day","").lower().startswith("time :") and dash_item.get("ScheduleOne_Day","").strip() != "") or \
-            (dash_item.get("ScheduleOne_Time") and not dash_item.get("ScheduleOne_Time","").lower().startswith("room :") and dash_item.get("ScheduleOne_Time","").strip() != "") or \
-            dash_item.get("ScheduleOne_TeacherInitial")):
-
-            entry1 = {
-                "CourseCode": dash_item.get("CourseCode"), "CourseTitle": dash_item.get("CourseTitle"),
-                "Section": dash_item.get("CourseSection"), "Day": dash_item.get("ScheduleOne_Day"),
-                "Room": dash_item.get("ScheduleOne_Room"), "TimeSlot": dash_item.get("ScheduleOne_Time")
-            }
-            teacher_initial_one = dash_item.get("ScheduleOne_TeacherInitial")
-            teacher_detail1 = teacher_details_lookup.get(teacher_initial_one, {}) # Use .get for safety
-            entry1["Teacher"] = teacher_detail1.get("FullName", teacher_initial_one or "N/A")
-            entry1["TeacherPhone"] = teacher_detail1.get("Phone", "")
-            entry1["TeacherEmail"] = teacher_detail1.get("Email", "")
-            final_combined_routine.append(entry1)
-
-        # Process Schedule Two
-        if include_this_item_schedule_two:
-            sch2_day = dash_item.get("ScheduleTwo_Day","")
-            sch2_time = dash_item.get("ScheduleTwo_Time","")
-            sch2_teacher_initial = dash_item.get("ScheduleTwo_TeacherInitial","")
-
-            is_sch2_data_valid = bool(sch2_teacher_initial and sch2_day and \
-                                   not sch2_day.lower().startswith("time :") and \
-                                   not sch2_day.strip() == "" and \
-                                   sch2_time and \
-                                   not sch2_time.lower().startswith("room :") and \
-                                   not sch2_time.strip() == "")
-
-            if is_sch2_data_valid:
-                entry2 = {
-                    "CourseCode": dash_item.get("CourseCode"), "CourseTitle": dash_item.get("CourseTitle"),
-                    "Section": dash_item.get("CourseSection"),
-                    "Day": sch2_day,
-                    "Room": dash_item.get("ScheduleTwo_Room"), "TimeSlot": sch2_time
+        if item_section == primary_section or (item_section == secondary_section and is_lab):
+            
+            if item.get("ScheduleOne_Day") and not item.get("ScheduleOne_Day","").lower().startswith("time :"):
+                entry1 = {
+                    "CourseCode": item.get("CourseCode"), 
+                    "CourseTitle": item.get("CourseTitle"),
+                    "Section": item.get("CourseSection"), 
+                    "Day": item.get("ScheduleOne_Day"),
+                    "Room": item.get("ScheduleOne_Room"), 
+                    "TimeSlot": item.get("ScheduleOne_Time")
                 }
-                teacher_detail2 = teacher_details_lookup.get(sch2_teacher_initial, {}) # Use .get for safety
-                entry2["Teacher"] = teacher_detail2.get("FullName", sch2_teacher_initial or "N/A")
-                entry2["TeacherPhone"] = teacher_detail2.get("Phone", "")
-                entry2["TeacherEmail"] = teacher_detail2.get("Email", "")
-                final_combined_routine.append(entry2)
+                initial = item.get("ScheduleOne_TeacherInitial")
+                details = teacher_details.get(initial, {})
+                entry1.update({
+                    "Teacher": details.get("FullName", initial or "N/A"),
+                    "TeacherPhone": details.get("Phone", ""),
+                    "TeacherEmail": details.get("Email", "")
+                })
+                final_routine.append(entry1)
 
-    if final_combined_routine:
-        unique_final_routine = []
-        seen_tuples = set() # Set to store tuples of identifying fields to check for uniqueness
-        for item in final_combined_routine:
-            # Define what makes an entry unique (e.g., combination of course, day, time, section, teacher)
-            # Adjust this tuple based on how you define a unique class slot
-            item_tuple = (
-                item.get("CourseCode"), item.get("Day"), item.get("TimeSlot"),
-                item.get("Section"), item.get("Teacher") # Teacher might be "N/A" if initial not found
-            )
-            if item_tuple not in seen_tuples:
-                unique_final_routine.append(item)
-                seen_tuples.add(item_tuple)
+            if item.get("ScheduleTwo_Day") and not item.get("ScheduleTwo_Day","").lower().startswith("time :"):
+                entry2 = {
+                    "CourseCode": item.get("CourseCode"), 
+                    "CourseTitle": item.get("CourseTitle"),
+                    "Section": item.get("CourseSection"),
+                    "Day": item.get("ScheduleTwo_Day"),
+                    "Room": item.get("ScheduleTwo_Room"), 
+                    "TimeSlot": item.get("ScheduleTwo_Time")
+                }
+                initial = item.get("ScheduleTwo_TeacherInitial")
+                details = teacher_details.get(initial, {})
+                entry2.update({
+                    "Teacher": details.get("FullName", initial or "N/A"),
+                    "TeacherPhone": details.get("Phone", ""),
+                    "TeacherEmail": details.get("Email", "")
+                })
+                final_routine.append(entry2)
 
-        print(f"Generated {len(unique_final_routine)} unique combined routine entries for final output.", flush=True)
-        save_data_to_file(unique_final_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv")
-        save_data_to_file(unique_final_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
+    if final_routine:
+        unique_routine = []
+        seen = set()
+        for entry in final_routine:
+            uid = (entry["CourseCode"], entry["Day"], entry["TimeSlot"], entry["Section"])
+            if uid not in seen:
+                unique_routine.append(entry)
+                seen.add(uid)
+
+        print(f"Exporting {len(unique_routine)} unique entries.", flush=True)
+        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv")
+        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
     else:
-        print("Could not generate final combined routine data (no valid entries found after processing).", flush=True)
+        print("Warning: No valid routine entries filtered.", flush=True)
 
-    print("\nScript processing completed.", flush=True)
+    print("\nScraper workflow finished.", flush=True)
 
 if __name__ == "__main__":
-    print("Script execution started via __main__...", flush=True)
     try:
         main()
-    except Exception as e_global:
-        print(f"Global unhandled exception in main: {e_global}", flush=True)
-        import traceback
+    except Exception as e:
+        print(f"Fatal global error: {e}", flush=True)
         traceback.print_exc()
-    finally:
-        print("Script execution finished.", flush=True)
