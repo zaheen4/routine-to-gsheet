@@ -1,5 +1,7 @@
 import json
 import time
+import subprocess
+import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -23,8 +25,8 @@ print("Script starting: Imports successful.", flush=True)
 
 # --- Configuration ---
 # Browser Choice: "firefox" or "chrome"
-# Ensure the corresponding WebDriver (GeckoDriver for Firefox, ChromeDriver for Chrome) is set up.
-PREFERRED_BROWSER = "firefox"  # Or "chrome"
+
+PREFERRED_BROWSER = "chrome"
 
 
 
@@ -36,7 +38,7 @@ BASE_OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 FORMATTED_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "output_of_fetched_routine")
 TMP_OUTPUT_DIR = os.path.join(BASE_OUTPUT_DIR, "tmp")
 
-# Output filenames (will be prefixed by section for some)
+# Output filenames
 ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL = 'attendance_dashboard_{section}.html'
 ATTENDANCE_DATA_CSV_FILENAME_TPL = 'dashboard_data_{section}.csv'
 ATTENDANCE_DATA_JSON_FILENAME_TPL = 'dashboard_data_{section}.json'
@@ -255,6 +257,16 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
     print(f"Finished processing dashboard for user {user_creds['id']}.", flush=True)
     return user_dashboard_data
 
+def get_chrome_major_version():
+    try:
+        # Tries to get the version from the system
+        output = subprocess.check_output(["google-chrome-stable", "--version"]).decode("utf-8")
+        version = re.search(r"Google Chrome (\d+)", output).group(1)
+        return int(version)
+    except:
+        return None # Fallback to let uc try its default
+
+
 # --- Main Script ---
 def main():
     print("Executing main() function...", flush=True)
@@ -275,55 +287,44 @@ def main():
         "attendance_dashboard_url": credentials_data["attendance_dashboard_url"]
     }
 
-    # --- WebDriver Initialization (Handles browser choice automatically) ---
-    options = None
-    service = None
-    web_driver_class = None
-
-    print(f"Configuring WebDriver for selected browser: {PREFERRED_BROWSER.upper()}", flush=True)
-
-    try:
-        if PREFERRED_BROWSER.lower() == "firefox":
-            options = FirefoxOptions()
-            options.add_argument("--headless")
-            print("Setting up automatic WebDriver for Firefox (GeckoDriver)...", flush=True)
-            service = FirefoxService(GeckoDriverManager().install())
-            web_driver_class = webdriver.Firefox
-
-        elif PREFERRED_BROWSER.lower() == "chrome":
-            options = ChromeOptions()
-            options.add_argument("--headless")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            print("Setting up automatic WebDriver for Chrome (ChromeDriver)...", flush=True)
-            service = ChromeService(ChromeDriverManager().install())
-            web_driver_class = webdriver.Chrome
-        else:
-            print(f"Fatal Error: Invalid browser choice '{PREFERRED_BROWSER}'. Please set it to 'firefox' or 'chrome'.", flush=True)
-            return
-            
-    except Exception as e_driver_setup:
-        print(f"Fatal Error setting up WebDriver for {PREFERRED_BROWSER.upper()}: {e_driver_setup}", flush=True)
-        print("Please ensure the selected browser is installed on your system.", flush=True)
-        return
-
-    if not web_driver_class or not service or not options:
-         print(f"Fatal Error: WebDriver components were not correctly initialized for {PREFERRED_BROWSER.upper()}.", flush=True)
-         return
-    # --- End of WebDriver Service and Options Initialization ---
-
-    
 
     for user_profile in credentials_data["users"]:
-        driver = None # Initialize driver to None for each user iteration
+        driver = None 
+        options = None
+        service = None
+        web_driver_class = None
+
         try:
-            print(f"\n--- Creating WebDriver instance for User: {user_profile['id']} using {PREFERRED_BROWSER.upper()} ---", flush=True)
-            # Create a new driver instance for each user
-            driver = web_driver_class(service=service, options=options)
-            driver.implicitly_wait(15) # Set implicit wait for the new driver instance
-            print(f"{PREFERRED_BROWSER.upper()} WebDriver instance for user {user_profile['id']} created successfully.", flush=True)
+            print(f"\n--- Configuring and Creating WebDriver instance for User: {user_profile['id']} ---", flush=True)
+
+            # --- INITIALIZE FRESH OPTIONS FOR EVERY USER ---
+            if PREFERRED_BROWSER.lower() == "chrome":
+                options = uc.ChromeOptions()
+                options.add_argument("--window-size=1920,1080")
+                options.add_argument("--disable-gpu")
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                web_driver_class = uc.Chrome
+                
+                # Create driver immediately
+                major_v = get_chrome_major_version()
+                driver = web_driver_class(options=options, version_main=major_v)
+
+            elif PREFERRED_BROWSER.lower() == "firefox":
+                options = FirefoxOptions()
+                service = FirefoxService(GeckoDriverManager().install())
+                web_driver_class = webdriver.Firefox
+                
+                # Create driver immediately
+                driver = web_driver_class(service=service, options=options)
+
+            # Safety check
+            if not driver:
+                print(f"Error: Could not initialize {PREFERRED_BROWSER} for {user_profile['id']}.")
+                continue
+
+            driver.implicitly_wait(15)
+            print(f"{PREFERRED_BROWSER.upper()} instance for {user_profile['id']} is ready.", flush=True)
 
             user_data = scrape_dashboard_for_user(driver, user_profile, common_urls)
             all_dashboard_data_collected.extend(user_data)

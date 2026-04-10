@@ -7,7 +7,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import traceback # Added for more detailed error logging
 
-print("gsheet_formatter.py starting (simplified version)...", flush=True)
+print("gsheet_formatter.py starting...", flush=True)
 
 # --- Configuration ---
 # Edit this section
