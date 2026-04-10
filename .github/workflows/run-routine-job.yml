@@ -29,7 +29,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.13' # Choose a Python version
+        python-version: '3.12' # Choose a Python version
 
     # 3. Install dependencies from requirements.txt
     - name: Install dependencies
@@ -39,24 +39,38 @@ jobs:
 
     # 4. Recreate credential files from GitHub Secrets
     - name: Create credential files from secrets
+      env:
+        UCAM_CREDS: ${{ secrets.UCAM_LOGIN_CREDENTIALS }}
+        TEACHER_CREDS: ${{ secrets.TEACHER_CONTACT_DETAILS }}
+        GCP_SA: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+        GCP_OAUTH: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        TOKEN_B64: ${{ secrets.TOKEN_PICKLE_B64 }}
       run: |
         # Create directories
         mkdir -p configs_to_edit
         mkdir -p google_cloud_keys
 
-        # Recreate the JSON files by echoing the secret content into them
-        # Use single quotes to preserve the exact formatting of the multiline JSON
-        echo '${{ secrets.UCAM_LOGIN_CREDENTIALS }}' > configs_to_edit/ucam_login_credentials.json
-        echo '${{ secrets.TEACHER_CONTACT_DETAILS }}' > configs_to_edit/teacher_contact_details.json
-        echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}' > google_cloud_keys/service_account_key.json
-        echo '${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}' > google_cloud_keys/oauth_client_secret.json
+        # Safely write environment variables to files
+        echo "$UCAM_CREDS" > configs_to_edit/ucam_login_credentials.json
+        echo "$TEACHER_CREDS" > configs_to_edit/teacher_contact_details.json
+        echo "$GCP_SA" > google_cloud_keys/service_account_key.json
+        echo "$GCP_OAUTH" > google_cloud_keys/oauth_client_secret.json
         
-        # This line for base64 doesn't need quotes, but adding them is fine
-        echo '${{ secrets.TOKEN_PICKLE_B64 }}' | base64 --decode > token.pickle
+        # Decode the token
+        echo "$TOKEN_B64" | base64 --decode > token.pickle
         
-    # 5. Run the web scraper script
+    # NEW STEP: Install the virtual display server
+    - name: Install Xvfb
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        
+        wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+        sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+
+    # MODIFIED STEP: Wrap the python execution in xvfb-run
     - name: Run Routine Scraper
-      run: python routine_scrapper.py
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python routine_scrapper.py
 
     # 6. Run the Google Sheet formatter script
     - name: Run GSheet Formatter
