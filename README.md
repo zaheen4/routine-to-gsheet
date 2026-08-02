@@ -47,6 +47,10 @@ project_root/
 ├── google_cloud_keys/          # API credentials directory
 │   ├── service_account_key.json.example
 │   └── oauth_client_secret.json.example
+├── scripts/                    # Local automation and helper scripts
+│   ├── run_routine.sh          # Portable runner script
+│   ├── routine-automation.service.example
+│   └── routine-automation.timer.example
 ├── output_of_fetched_routine/  # Local cache for scraped data
 ├── requirements.txt            # Project dependencies
 ├── encode.py                   # Utility for GitHub Secrets encoding
@@ -240,10 +244,31 @@ function parseAndFormatTime(timeStr) {
 
 ---
 
-## Automation (GitHub Actions)
-The workflow in `.github/workflows/run-routine-job.yml` automates the synchronization on a schedule.
+## Automation
 
-### Configuration (Repository Secrets)
+### Local Automation (Linux Systemd)
+For reliable weekly automation on your local machine that runs even if the computer was off at the scheduled time:
+
+1. **Setup Config Directories**:
+   ```bash
+   mkdir -p ~/.config/systemd/user/
+   ```
+2. **Configure and Install Service**:
+   Run this command from the project root to automatically generate the service with the correct paths:
+   ```bash
+   sed "s|/path/to/your/project|$(pwd)|g" scripts/routine-automation.service.example > ~/.config/systemd/user/routine-automation.service
+   cp scripts/routine-automation.timer.example ~/.config/systemd/user/routine-automation.timer
+   ```
+3. **Activate**:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now routine-automation.timer
+   ```
+
+### GitHub Actions
+The workflow in `.github/workflows/run-routine-job.yml` can automate synchronization on a schedule. **Note**: This may be unreliable due to Cloudflare blocks on datacenter IP ranges.
+
+#### Configuration (Repository Secrets)
 Add the following secrets to your repository:
 * `UCAM_LOGIN_CREDENTIALS`: Content of `ucam_login_credentials.json`
 * `TEACHER_CONTACT_DETAILS`: Content of `teacher_contact_details.json`

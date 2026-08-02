@@ -1,0 +1,13 @@
+[Unit]
+Description=Run UCAM Routine Automation weekly
+Requires=routine-automation.service
+
+[Timer]
+Unit=routine-automation.service
+# Saturday at 7 PM (19:00)
+OnCalendar=Sat *-*-* 19:00:00
+# This is the "failsafe" - run as soon as possible if the PC was off
+Persistent=true
+
+[Install]
+WantedBy=timers.target
