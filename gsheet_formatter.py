@@ -88,7 +88,7 @@ def authenticate_gsheet(service_account_json_path):
         print(f"Authentication failed: {e}", flush=True)
         return None
 
-def get_or_create_worksheet(spreadsheet, sheet_name, rows="100", cols="20"):
+def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
     """
     Retrieves a worksheet by name, creating it if it does not exist.
     
@@ -170,7 +170,7 @@ def write_data_to_sheet(worksheet, data_to_write):
         
         # Apply WRAP strategy to the contact column (Column H)
         contact_col_idx = sheet_headers.index("Teacher Phone and Email") + 1
-        contact_col_letter = gspread.utils.rowcol_to_a1(1, contact_col_idx)[0]
+        contact_col_letter = gspread.utils.rowcol_to_a1(1, contact_col_idx)[:-1]
         
         if contact_col_letter:
             worksheet.format(
