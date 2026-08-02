@@ -1,0 +1,11 @@
+[Unit]
+Description=UCAM Routine Scraper and GSheet Formatter
+
+[Service]
+Type=simple
+# Replace with the absolute path to your run_routine.sh script
+ExecStart=/path/to/your/project/scripts/run_routine.sh
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
