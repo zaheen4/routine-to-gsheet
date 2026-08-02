@@ -104,6 +104,19 @@ def load_teacher_details_from_file(file_path):
 
 # [Parsing Functions]
 
+RE_COURSE_CODE = re.compile(r"Course Code\s*:\s*(.+)", re.IGNORECASE)
+RE_TITLE = re.compile(r"Title\s*:\s*(.+)", re.IGNORECASE)
+RE_CREDIT = re.compile(r"Credit\s*:\s*([0-9.]+)", re.IGNORECASE)
+RE_SECTION = re.compile(r"Section\s*:\s*(.+)", re.IGNORECASE)
+RE_DAY = re.compile(r"Day\s*:\s*(.+)", re.IGNORECASE)
+RE_TIME = re.compile(r"Time\s*:\s*(.+)", re.IGNORECASE)
+RE_ROOM = re.compile(r"Room\s*:\s*(.+)", re.IGNORECASE)
+RE_TEACHER = re.compile(r"Teacher\s*:\s*(\S+)", re.IGNORECASE)
+
+def _extract(pattern, text):
+    match = pattern.search(text)
+    return match.group(1).strip() if match else ""
+
 def parse_attendance_dashboard_data(html_content, user_section_label_tag):
     """
     Parses routine data from the UCAM attendance dashboard HTML.
@@ -128,34 +141,22 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
         entry = {"SL": cells[0].get_text(strip=True), "UserScrapedSection": user_section_label_tag}
 
         course_info_raw = cells[1].get_text(separator='\n', strip=True)
-        entry["CourseCode"] = (re.search(r"Course Code\s*:\s*(.+)", course_info_raw, re.IGNORECASE).group(1).replace('<b>','').replace('</b>','').strip()
-                               if re.search(r"Course Code\s*:\s*(.+)", course_info_raw, re.IGNORECASE) else "")
-        entry["CourseTitle"] = (re.search(r"Title\s*:\s*(.+)", course_info_raw, re.IGNORECASE).group(1).strip()
-                                if re.search(r"Title\s*:\s*(.+)", course_info_raw, re.IGNORECASE) else "")
-        entry["Credit"] = (re.search(r"Credit\s*:\s*([0-9.]+)", course_info_raw, re.IGNORECASE).group(1).strip()
-                           if re.search(r"Credit\s*:\s*([0-9.]+)", course_info_raw, re.IGNORECASE) else "")
-        entry["CourseSection"] = (re.search(r"Section\s*:\s*(.+)", course_info_raw, re.IGNORECASE).group(1).strip()
-                            if re.search(r"Section\s*:\s*(.+)", course_info_raw, re.IGNORECASE) else "")
+        entry["CourseCode"] = _extract(RE_COURSE_CODE, course_info_raw)
+        entry["CourseTitle"] = _extract(RE_TITLE, course_info_raw)
+        entry["Credit"] = _extract(RE_CREDIT, course_info_raw)
+        entry["CourseSection"] = _extract(RE_SECTION, course_info_raw)
 
         schedule_one_raw = cells[2].get_text(separator='\n', strip=True)
-        entry["ScheduleOne_Day"] = (re.search(r"Day\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE).group(1).replace('<b>','').replace('</b>','').strip()
-                                   if re.search(r"Day\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE) else "")
-        entry["ScheduleOne_Time"] = (re.search(r"Time\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE).group(1).strip()
-                                    if re.search(r"Time\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE) else "")
-        entry["ScheduleOne_Room"] = (re.search(r"Room\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE).group(1).strip()
-                                    if re.search(r"Room\s*:\s*(.+)", schedule_one_raw, re.IGNORECASE) else "")
-        entry["ScheduleOne_TeacherInitial"] = (re.search(r"Teacher\s*:\s*(\S+)", schedule_one_raw, re.IGNORECASE).group(1).strip()
-                                             if re.search(r"Teacher\s*:\s*(\S+)", schedule_one_raw, re.IGNORECASE) else "")
+        entry["ScheduleOne_Day"] = _extract(RE_DAY, schedule_one_raw)
+        entry["ScheduleOne_Time"] = _extract(RE_TIME, schedule_one_raw)
+        entry["ScheduleOne_Room"] = _extract(RE_ROOM, schedule_one_raw)
+        entry["ScheduleOne_TeacherInitial"] = _extract(RE_TEACHER, schedule_one_raw)
 
         schedule_two_raw = cells[3].get_text(separator='\n', strip=True)
-        entry["ScheduleTwo_Day"] = (re.search(r"Day\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE).group(1).replace('<b>','').replace('</b>','').strip()
-                                   if re.search(r"Day\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE) else "")
-        entry["ScheduleTwo_Time"] = (re.search(r"Time\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE).group(1).strip()
-                                    if re.search(r"Time\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE) else "")
-        entry["ScheduleTwo_Room"] = (re.search(r"Room\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE).group(1).strip()
-                                    if re.search(r"Room\s*:\s*(.+)", schedule_two_raw, re.IGNORECASE) else "")
-        entry["ScheduleTwo_TeacherInitial"] = (re.search(r"Teacher\s*:\s*(\S+)", schedule_two_raw, re.IGNORECASE).group(1).strip()
-                                             if re.search(r"Teacher\s*:\s*(\S+)", schedule_two_raw, re.IGNORECASE) else "")
+        entry["ScheduleTwo_Day"] = _extract(RE_DAY, schedule_two_raw)
+        entry["ScheduleTwo_Time"] = _extract(RE_TIME, schedule_two_raw)
+        entry["ScheduleTwo_Room"] = _extract(RE_ROOM, schedule_two_raw)
+        entry["ScheduleTwo_TeacherInitial"] = _extract(RE_TEACHER, schedule_two_raw)
 
         dashboard_entries.append(entry)
 
@@ -164,7 +165,7 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
 
 # [Persistence Functions]
 
-def save_data_to_file(data, output_dir, filename, file_type='csv'):
+def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=None):
     """
     Persists data to disk in the specified format.
     """
@@ -176,10 +177,8 @@ def save_data_to_file(data, output_dir, filename, file_type='csv'):
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
             print(f"Error: Invalid CSV data format for {filename}", flush=True)
             return
-            
-        if "final_combined_routine" in filename:
-             fieldnames = ["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"]
-        else:
+
+        if fieldnames is None:
             fieldnames = list(data[0].keys())
 
         try:
@@ -358,6 +357,8 @@ def main():
 
             elif PREFERRED_BROWSER.lower() == "firefox":
                 options = FirefoxOptions()
+                if HEADLESS:
+                    options.headless = True
                 service = FirefoxService(GeckoDriverManager().install())
                 driver = webdriver.Firefox(service=service, options=options)
 
@@ -446,7 +447,8 @@ def main():
                 seen.add(uid)
 
         print(f"Exporting {len(unique_routine)} unique entries.", flush=True)
-        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv")
+        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
+                          fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"])
         save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
     else:
         print("Warning: No valid routine entries filtered.", flush=True)
