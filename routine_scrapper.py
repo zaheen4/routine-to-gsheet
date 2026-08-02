@@ -26,6 +26,8 @@ print("Initializing routine scraper...", flush=True)
 # [Configuration]
 # Browser Selection: "chrome" (recommended) or "firefox"
 PREFERRED_BROWSER = "chrome"
+# Headless Mode: Set to True to run without a visible window
+HEADLESS = False
 
 # Path Configuration
 CREDENTIALS_FILE = 'configs_to_edit/ucam_login_credentials.json'
@@ -352,7 +354,7 @@ def main():
                 options.add_argument("--profile-directory=Default")
                 
                 major_v = get_chrome_major_version()
-                driver = uc.Chrome(options=options, version_main=major_v)
+                driver = uc.Chrome(options=options, version_main=major_v, headless=HEADLESS)
 
             elif PREFERRED_BROWSER.lower() == "firefox":
                 options = FirefoxOptions()
