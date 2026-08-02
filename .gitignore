@@ -7,6 +7,9 @@ venv/
 # Ignore user-specific authentication token for Google
 token.pickle
 
+# Local agent instructions (not tracked)
+AGENTS.md
+
 # This will NOT ignore the ".json.example.txt" template files.
 configs_to_edit/ucam_login_credentials.json
 configs_to_edit/teacher_contact_details.json
