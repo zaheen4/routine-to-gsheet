@@ -8,7 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
 import os
 import csv
@@ -20,13 +20,11 @@ from config import PREFERRED_BROWSER, HEADLESS, setup_logging
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from webdriver_manager.firefox import GeckoDriverManager
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from webdriver_manager.chrome import ChromeDriverManager
 
 setup_logging()
 logger = logging.getLogger(__name__)
 logger.info("Initializing routine scraper...")
+
 # Path Configuration
 CREDENTIALS_FILE = 'configs_to_edit/ucam_login_credentials.json'
 TEACHER_DETAILS_FILE = 'configs_to_edit/teacher_contact_details.json'
@@ -195,6 +193,73 @@ def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=No
             logger.info("Exported JSON: %s", output_file_path)
         except Exception as e:
             logger.error("Failed to export JSON: %s", e)
+
+
+# [Data Merging Functions]
+
+def _schedule_entry(item, prefix, teacher_details):
+    """
+    Builds a final routine entry dict for one schedule slot of a scraped item.
+
+    Args:
+        item (dict): A scraped dashboard entry.
+        prefix (str): "ScheduleOne" or "ScheduleTwo".
+        teacher_details (dict): Teacher initials -> contact details.
+
+    Returns:
+        dict or None: A routine entry, or None if the slot has no day.
+    """
+    day = item.get(f"{prefix}_Day")
+    if not day or day.lower().startswith("time :"):
+        return None
+
+    entry = {
+        "CourseCode": item.get("CourseCode"),
+        "CourseTitle": item.get("CourseTitle"),
+        "Section": item.get("CourseSection"),
+        "Day": day,
+        "Room": item.get(f"{prefix}_Room"),
+        "TimeSlot": item.get(f"{prefix}_Time"),
+    }
+
+    initial = item.get(f"{prefix}_TeacherInitial")
+    details = teacher_details.get(initial, {})
+    entry.update({
+        "Teacher": details.get("FullName", initial or "N/A"),
+        "TeacherPhone": details.get("Phone", ""),
+        "TeacherEmail": details.get("Email", "")
+    })
+    return entry
+
+def build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details):
+    """
+    Merges per-section scraped data into the final deduplicated routine.
+
+    The primary section keeps all courses; the secondary section contributes
+    only lab courses (title contains "lab"). Entries are deduplicated by
+    (CourseCode, Day, TimeSlot, Section).
+    """
+    final_routine = []
+
+    for item in all_collected_data:
+        is_lab = "lab" in item.get("CourseTitle", "").lower()
+        item_section = item.get("UserScrapedSection")
+
+        if item_section == primary_section or (item_section == secondary_section and is_lab):
+            for prefix in ("ScheduleOne", "ScheduleTwo"):
+                entry = _schedule_entry(item, prefix, teacher_details)
+                if entry:
+                    final_routine.append(entry)
+
+    unique_routine = []
+    seen = set()
+    for entry in final_routine:
+        uid = (entry["CourseCode"], entry["Day"], entry["TimeSlot"], entry["Section"])
+        if uid not in seen:
+            unique_routine.append(entry)
+            seen.add(uid)
+
+    return unique_routine
 
 
 # [Web Scraping Logic]
@@ -388,62 +453,12 @@ def main():
         return
 
     logger.info("--- Processing Combined Results ---")
-    final_routine = []
-    
     primary_section = credentials["users"][0]["section_label"]
     secondary_section = credentials["users"][1]["section_label"] if len(credentials["users"]) > 1 else None
 
-    for item in all_collected_data:
-        is_lab = "lab" in item.get("CourseTitle", "").lower()
-        item_section = item.get("UserScrapedSection")
+    unique_routine = build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details)
 
-        if item_section == primary_section or (item_section == secondary_section and is_lab):
-            
-            if item.get("ScheduleOne_Day") and not item.get("ScheduleOne_Day","").lower().startswith("time :"):
-                entry1 = {
-                    "CourseCode": item.get("CourseCode"), 
-                    "CourseTitle": item.get("CourseTitle"),
-                    "Section": item.get("CourseSection"), 
-                    "Day": item.get("ScheduleOne_Day"),
-                    "Room": item.get("ScheduleOne_Room"), 
-                    "TimeSlot": item.get("ScheduleOne_Time")
-                }
-                initial = item.get("ScheduleOne_TeacherInitial")
-                details = teacher_details.get(initial, {})
-                entry1.update({
-                    "Teacher": details.get("FullName", initial or "N/A"),
-                    "TeacherPhone": details.get("Phone", ""),
-                    "TeacherEmail": details.get("Email", "")
-                })
-                final_routine.append(entry1)
-
-            if item.get("ScheduleTwo_Day") and not item.get("ScheduleTwo_Day","").lower().startswith("time :"):
-                entry2 = {
-                    "CourseCode": item.get("CourseCode"), 
-                    "CourseTitle": item.get("CourseTitle"),
-                    "Section": item.get("CourseSection"),
-                    "Day": item.get("ScheduleTwo_Day"),
-                    "Room": item.get("ScheduleTwo_Room"), 
-                    "TimeSlot": item.get("ScheduleTwo_Time")
-                }
-                initial = item.get("ScheduleTwo_TeacherInitial")
-                details = teacher_details.get(initial, {})
-                entry2.update({
-                    "Teacher": details.get("FullName", initial or "N/A"),
-                    "TeacherPhone": details.get("Phone", ""),
-                    "TeacherEmail": details.get("Email", "")
-                })
-                final_routine.append(entry2)
-
-    if final_routine:
-        unique_routine = []
-        seen = set()
-        for entry in final_routine:
-            uid = (entry["CourseCode"], entry["Day"], entry["TimeSlot"], entry["Section"])
-            if uid not in seen:
-                unique_routine.append(entry)
-                seen.add(uid)
-
+    if unique_routine:
         logger.info("Exporting %d unique entries.", len(unique_routine))
         save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
                           fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"])
