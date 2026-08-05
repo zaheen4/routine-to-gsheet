@@ -13,8 +13,9 @@ from bs4 import BeautifulSoup
 import os
 import csv
 import re
+import shutil
 
-from config import PREFERRED_BROWSER, HEADLESS, setup_logging
+from config import PREFERRED_BROWSER, HEADLESS, CHROME_BINARY_PATH, setup_logging
 
 # Browser-specific imports
 from selenium.webdriver.firefox.service import Service as FirefoxService
@@ -448,20 +449,44 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
     select_semester(driver, common_urls['attendance_dashboard_url'], section_label)
     return extract_dashboard(driver, section_label)
 
-def get_chrome_major_version():
+CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
+
+def get_chrome_executable():
     """
-    Attempts to retrieve the installed Chrome version.
+    Resolve the exact Chrome binary to launch and match chromedriver against.
+
+    Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan.
+    Unlike undetected-chromedriver's own lookup (a set, order not guaranteed),
+    this keeps the browser choice consistent between version detection and launch.
     """
-    for binary in ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]:
-        try:
-            output = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode("utf-8")
-            version_match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
-            if version_match:
-                major_version = int(version_match.group(1))
-                logger.info("System Chrome Version: %d (via '%s')", major_version, binary)
-                return major_version
-        except:
-            continue
+    if CHROME_BINARY_PATH:
+        if os.path.isfile(CHROME_BINARY_PATH):
+            logger.info("Using Chrome binary from CHROME_BINARY_PATH: %s", CHROME_BINARY_PATH)
+            return CHROME_BINARY_PATH
+        logger.warning("CHROME_BINARY_PATH set but not found: %s", CHROME_BINARY_PATH)
+    for binary in CHROME_BINARY_NAMES:
+        path = shutil.which(binary)
+        if path:
+            return path
+    return None
+
+def get_chrome_major_version(chrome_path=None):
+    """
+    Attempts to retrieve the major version of the Chrome binary to be launched.
+    """
+    binary = chrome_path or get_chrome_executable()
+    if not binary:
+        logger.error("No Chrome binary found on this system.")
+        return None
+    try:
+        output = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode("utf-8")
+        version_match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
+        if version_match:
+            major_version = int(version_match.group(1))
+            logger.info("System Chrome Version: %d (via '%s')", major_version, binary)
+            return major_version
+    except Exception as e:
+        logger.error("Failed to detect Chrome version from %s: %s", binary, e)
     return None
 
 
@@ -499,8 +524,13 @@ def main():
                 options.add_argument("--disable-blink-features=AutomationControlled")
                 options.add_argument("--profile-directory=Default")
                 
-                major_v = get_chrome_major_version()
-                driver = uc.Chrome(options=options, version_main=major_v, headless=HEADLESS)
+                chrome_path = get_chrome_executable()
+                if not chrome_path:
+                    logger.error("No Chrome binary found for %s. Install Chrome/Chromium or set CHROME_BINARY_PATH.", profile['id'])
+                    continue
+                major_v = get_chrome_major_version(chrome_path)
+                driver = uc.Chrome(options=options, version_main=major_v,
+                                   browser_executable_path=chrome_path, headless=HEADLESS)
 
             elif PREFERRED_BROWSER.lower() == "firefox":
                 options = FirefoxOptions()
