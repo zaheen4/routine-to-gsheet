@@ -2,6 +2,7 @@ import json
 import time
 import subprocess
 import traceback
+import logging
 import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -13,6 +14,8 @@ import os
 import csv
 import re
 
+from config import PREFERRED_BROWSER, HEADLESS, setup_logging
+
 # Browser-specific imports
 from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
@@ -21,14 +24,9 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from webdriver_manager.chrome import ChromeDriverManager
 
-print("Initializing routine scraper...", flush=True)
-
-# [Configuration]
-# Browser Selection: "chrome" (recommended) or "firefox"
-PREFERRED_BROWSER = "chrome"
-# Headless Mode: Set to True to run without a visible window
-HEADLESS = False
-
+setup_logging()
+logger = logging.getLogger(__name__)
+logger.info("Initializing routine scraper...")
 # Path Configuration
 CREDENTIALS_FILE = 'configs_to_edit/ucam_login_credentials.json'
 TEACHER_DETAILS_FILE = 'configs_to_edit/teacher_contact_details.json'
@@ -53,7 +51,7 @@ def load_credentials(file_path):
     """
     Loads and validates UCAM authentication credentials from a JSON source.
     """
-    print(f"Loading credentials from: {file_path}", flush=True)
+    logger.info("Loading credentials from: %s", file_path)
     if not os.path.isabs(file_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(script_dir, file_path)
@@ -63,22 +61,22 @@ def load_credentials(file_path):
         
         required_top_keys = ["users", "login_url", "attendance_dashboard_url"]
         if not all(key in credentials for key in required_top_keys):
-            print(f"Error: Missing top-level keys in {file_path}", flush=True)
+            logger.error("Missing top-level keys in %s", file_path)
             return None
             
         if not isinstance(credentials["users"], list) or not credentials["users"]:
-            print("Error: 'users' array is missing or empty.", flush=True)
+            logger.error("'users' array is missing or empty.")
             return None
             
         for user in credentials["users"]:
             required_user_keys = ["id", "username", "password", "section_label"]
             if not all(key in user for key in required_user_keys):
-                print(f"Error: Missing required user keys for ID: {user.get('id')}", flush=True)
+                logger.error("Missing required user keys for ID: %s", user.get('id'))
                 return None
                 
         return credentials
     except Exception as e:
-        print(f"Critical error loading credentials: {e}", flush=True)
+        logger.error("Critical error loading credentials: %s", e)
         return None
 
 def load_teacher_details_from_file(file_path):
@@ -92,13 +90,13 @@ def load_teacher_details_from_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             teacher_details = json.load(f)
-        print(f"Loaded {len(teacher_details)} teacher entries.", flush=True)
+        logger.info("Loaded %d teacher entries.", len(teacher_details))
         return teacher_details
     except FileNotFoundError:
-        print(f"Warning: Teacher details file not found at '{file_path}'.", flush=True)
+        logger.warning("Teacher details file not found at '%s'.", file_path)
         return {}
     except Exception as e:
-        print(f"Unexpected error loading teacher details: {e}", flush=True)
+        logger.error("Unexpected error loading teacher details: %s", e)
         return {}
 
 
@@ -126,7 +124,7 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
 
     main_table = soup.find('table', id="ctl00_MainContainer_gvCourseList")
     if not main_table:
-        print(f"Error: Data table not found for section {user_section_label_tag}.", flush=True)
+        logger.error("Data table not found for section %s.", user_section_label_tag)
         return dashboard_entries
 
     rows = main_table.find_all('tr')
@@ -175,7 +173,7 @@ def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=No
 
     if file_type == 'csv':
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-            print(f"Error: Invalid CSV data format for {filename}", flush=True)
+            logger.error("Invalid CSV data format for %s", filename)
             return
 
         if fieldnames is None:
@@ -186,17 +184,17 @@ def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=No
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                 writer.writeheader()
                 writer.writerows(data)
-            print(f"Exported CSV: {output_file_path}", flush=True)
+            logger.info("Exported CSV: %s", output_file_path)
         except Exception as e:
-            print(f"Failed to export CSV: {e}", flush=True)
+            logger.error("Failed to export CSV: %s", e)
             
     elif file_type == 'json':
         try:
             with open(output_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            print(f"Exported JSON: {output_file_path}", flush=True)
+            logger.info("Exported JSON: %s", output_file_path)
         except Exception as e:
-            print(f"Failed to export JSON: {e}", flush=True)
+            logger.error("Failed to export JSON: %s", e)
 
 
 # [Web Scraping Logic]
@@ -208,11 +206,11 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
     user_dashboard_data = []
     section_label = user_creds['section_label']
 
-    print(f"\n--- Processing User Profile: {user_creds['id']} ({section_label}) ---", flush=True)
+    logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
     
     # 1. Establish context by visiting a neutral site first
     try:
-        print("Masking entry: Establishing context via Google...", flush=True)
+        logger.info("Masking entry: Establishing context via Google...")
         driver.get("https://www.google.com")
         time.sleep(3)
     except: pass
@@ -221,31 +219,31 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
     try:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
-            print(f"Portal access attempt {attempt} to: {common_urls['login_url']}", flush=True)
+            logger.info("Portal access attempt %d to: %s", attempt, common_urls['login_url'])
             driver.get(common_urls['login_url'])
             
             # Allow extended time for Cloudflare background checks
             time.sleep(15) 
             page_title = driver.title
-            print(f"Current Page Title: '{page_title}'", flush=True)
+            logger.info("Current Page Title: '%s'", page_title)
             
             if "Just a moment" in page_title or "Cloudflare" in page_title or "Attention Required" in page_title:
-                print(f"Cloudflare block persisting. Refreshing session (Attempt {attempt})...", flush=True)
+                logger.info("Cloudflare block persisting. Refreshing session (Attempt %d)...", attempt)
                 time.sleep(5)
                 continue
             
             try:
                 WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "logMain_UserName")))
-                print("UCAM Login fields detected. Challenge likely bypassed.", flush=True)
+                logger.info("UCAM Login fields detected. Challenge likely bypassed.")
                 break
             except TimeoutException:
                 if attempt == max_attempts:
-                    print("Critical: Failed to bypass Cloudflare after maximum retries.", flush=True)
-                    print("Page Snippet:", driver.page_source[:500], flush=True)
+                    logger.error("Critical: Failed to bypass Cloudflare after maximum retries.")
+                    logger.error("Page Snippet: %s", driver.page_source[:500])
                     raise TimeoutException("Cloudflare challenge block.")
-                print("Retrying portal access...", flush=True)
+                logger.info("Retrying portal access...")
 
-        print("Authenticating with student credentials...", flush=True)
+        logger.info("Authenticating with student credentials...")
         user_field = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "logMain_UserName")))
         pass_field = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Password")))
         login_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Button1")))
@@ -255,9 +253,9 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
         login_btn.click()
         
         WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, "ctl00_lbtnUserName")))
-        print(f"User {user_creds['id']} authenticated successfully.", flush=True)
+        logger.info("User %s authenticated successfully.", user_creds['id'])
     except Exception as e:
-        print(f"Authentication Failure: {type(e).__name__} | URL: {driver.current_url}", flush=True)
+        logger.error("Authentication Failure: %s | URL: %s", type(e).__name__, driver.current_url)
         raise e
 
     # 3. Navigation to Dashboard
@@ -278,7 +276,7 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
     s2_option = f"//span[contains(@class, 'select2-results')]//li[text()=\"{target_semester}\"]"
     WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_option))).click()
 
-    print(f"Dashboard synchronized for semester: {target_semester}.", flush=True)
+    logger.info("Dashboard synchronized for semester: %s.", target_semester)
     time.sleep(5) 
 
     # 4. Content Extraction
@@ -311,7 +309,7 @@ def get_chrome_major_version():
             version_match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
             if version_match:
                 major_version = int(version_match.group(1))
-                print(f"System Chrome Version: {major_version} (via '{binary}')", flush=True)
+                logger.info("System Chrome Version: %d (via '%s')", major_version, binary)
                 return major_version
         except:
             continue
@@ -321,11 +319,11 @@ def get_chrome_major_version():
 # [Main Workflow]
 
 def main():
-    print("Executing scraper workflow...", flush=True)
+    logger.info("Executing scraper workflow...")
     
     credentials = load_credentials(CREDENTIALS_FILE)
     if not credentials:
-        print("Termination: Missing configuration.", flush=True)
+        logger.error("Termination: Missing configuration.")
         return
 
     teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
@@ -339,7 +337,7 @@ def main():
     for profile in credentials["users"]:
         driver = None 
         try:
-            print(f"\n--- Initializing Session: {profile['id']} ---", flush=True)
+            logger.info("--- Initializing Session: %s ---", profile['id'])
 
             if PREFERRED_BROWSER.lower() == "chrome":
                 options = uc.ChromeOptions()
@@ -363,7 +361,7 @@ def main():
                 driver = webdriver.Firefox(service=service, options=options)
 
             if not driver:
-                print(f"Error: Driver initialization failure for {profile['id']}.", flush=True)
+                logger.error("Driver initialization failure for %s.", profile['id'])
                 continue
 
             driver.implicitly_wait(15)
@@ -371,25 +369,25 @@ def main():
             all_collected_data.extend(user_data)
 
         except Exception as e:
-            print(f"Workflow Exception for {profile['id']}: {e}", flush=True)
+            logger.error("Workflow Exception for %s: %s", profile['id'], e)
             if driver:
                 try:
                     os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
                     log_path = os.path.join(TMP_OUTPUT_DIR, f"error_log_{profile['id']}.html")
                     with open(log_path, "w", encoding="utf-8") as f:
                         f.write(driver.page_source)
-                    print(f"Debug log saved: {log_path}", flush=True)
+                    logger.info("Debug log saved: %s", log_path)
                 except: pass
         finally:
             if driver:
                 driver.quit()
-                print(f"Session closed for {profile['id']}.", flush=True)
+                logger.info("Session closed for %s.", profile['id'])
 
     if not all_collected_data:
-        print("Data collection yielded zero results. Aborting export.", flush=True)
+        logger.error("Data collection yielded zero results. Aborting export.")
         return
 
-    print("\n--- Processing Combined Results ---", flush=True)
+    logger.info("--- Processing Combined Results ---")
     final_routine = []
     
     primary_section = credentials["users"][0]["section_label"]
@@ -446,18 +444,18 @@ def main():
                 unique_routine.append(entry)
                 seen.add(uid)
 
-        print(f"Exporting {len(unique_routine)} unique entries.", flush=True)
+        logger.info("Exporting %d unique entries.", len(unique_routine))
         save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
                           fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"])
         save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
     else:
-        print("Warning: No valid routine entries filtered.", flush=True)
+        logger.warning("No valid routine entries filtered.")
 
-    print("\nScraper workflow finished.", flush=True)
+    logger.info("Scraper workflow finished.")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"Fatal global error: {e}", flush=True)
+        logger.error("Fatal global error: %s", e)
         traceback.print_exc()
