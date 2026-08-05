@@ -3,17 +3,19 @@ import json
 import os
 import pickle
 import traceback
+import logging
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-print("gsheet_formatter.py starting...", flush=True)
+from config import SPREADSHEET_NAME, APP_SCRIPT_ID, setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
+logger.info("gsheet_formatter.py starting...")
 
 # [Configuration]
-# Update these variables with your specific spreadsheet and script details
-SPREADSHEET_NAME = 'CSE-03_B_ClassRoutine'
 TARGET_SHEET_NAME = 'backend'
-APP_SCRIPT_ID = 'AKfycbxEHGHqGrOQkLOpyikkjGLZ1cf-g0YfUW1dXmqWX6PUOoFxEPIr7FoeQ8e74-euTg'
 
 # [Path Constants]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,20 +47,20 @@ def load_routine_data(json_file_path):
     Returns:
         list: A list of routine entries or an empty list if loading fails.
     """
-    print(f"Loading routine data from: {json_file_path}", flush=True)
+    logger.info("Loading routine data from: %s", json_file_path)
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        print(f"Successfully loaded {len(data)} routine entries.", flush=True)
+        logger.info("Successfully loaded %d routine entries.", len(data))
         return data
     except FileNotFoundError:
-        print(f"Error: Source file '{json_file_path}' not found.", flush=True)
+        logger.error("Error: Source file '%s' not found.", json_file_path)
         return []
     except json.JSONDecodeError:
-        print(f"Error: Invalid JSON format in '{json_file_path}'.", flush=True)
+        logger.error("Invalid JSON format in '%s'.", json_file_path)
         return []
     except Exception as e:
-        print(f"Unexpected error in load_routine_data: {e}", flush=True)
+        logger.error("Unexpected error in load_routine_data: %s", e)
         return []
 
 def authenticate_gsheet(service_account_json_path):
@@ -71,21 +73,21 @@ def authenticate_gsheet(service_account_json_path):
     Returns:
         gspread.Client: Authenticated gspread client or None if authentication fails.
     """
-    print(f"Authenticating with Google Sheets API...", flush=True)
+    logger.info("Authenticating with Google Sheets API...")
     try:
         if not os.path.isabs(service_account_json_path):
             script_dir = os.path.dirname(os.path.abspath(__file__))
             service_account_json_path = os.path.join(script_dir, service_account_json_path)
 
         if not os.path.exists(service_account_json_path):
-            print(f"Error: Service account key not found at '{service_account_json_path}'.", flush=True)
+            logger.error("Service account key not found at '%s'.", service_account_json_path)
             return None
             
         gc = gspread.service_account(filename=service_account_json_path)
-        print("Google Sheets authentication successful.", flush=True)
+        logger.info("Google Sheets authentication successful.")
         return gc
     except Exception as e:
-        print(f"Authentication failed: {e}", flush=True)
+        logger.error("Authentication failed: %s", e)
         return None
 
 def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
@@ -103,13 +105,13 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
     """
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
-        print(f"Found existing worksheet: '{sheet_name}'", flush=True)
+        logger.info("Found existing worksheet: '%s'", sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        print(f"Worksheet '{sheet_name}' not found. Initializing new worksheet...", flush=True)
+        logger.info("Worksheet '%s' not found. Initializing new worksheet...", sheet_name)
         worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=rows, cols=cols)
-        print(f"Created worksheet: '{sheet_name}'", flush=True)
+        logger.info("Created worksheet: '%s'", sheet_name)
     except Exception as e:
-        print(f"Error accessing worksheet '{sheet_name}': {e}", flush=True)
+        logger.error("Error accessing worksheet '%s': %s", sheet_name, e)
         return None
     return worksheet
 
@@ -125,14 +127,14 @@ def write_data_to_sheet(worksheet, data_to_write):
         bool: True if writing was successful, False otherwise.
     """
     if not data_to_write:
-        print(f"No data available to write to '{worksheet.title}'.", flush=True)
+        logger.warning("No data available to write to '%s'.", worksheet.title)
         return False
     try:
         worksheet.clear()
-        print(f"Cleared existing content in '{worksheet.title}'.", flush=True)
+        logger.info("Cleared existing content in '%s'.", worksheet.title)
 
         if not isinstance(data_to_write, list) or not data_to_write or not isinstance(data_to_write[0], dict):
-            print("Error: Invalid data format. Expected a list of dictionaries.", flush=True)
+            logger.error("Invalid data format. Expected a list of dictionaries.")
             return False
 
         # Define sheet headers
@@ -177,12 +179,12 @@ def write_data_to_sheet(worksheet, data_to_write):
                 f"{contact_col_letter}2:{contact_col_letter}{len(all_rows)}", 
                 {'wrapStrategy': 'WRAP'}
             )
-            print(f"Applied text wrapping to contact column ({contact_col_letter}).", flush=True)
+            logger.info("Applied text wrapping to contact column (%s).", contact_col_letter)
 
-        print(f"Wrote {len(data_to_write)} rows to '{worksheet.title}'.", flush=True)
+        logger.info("Wrote %d rows to '%s'.", len(data_to_write), worksheet.title)
         return True
     except Exception as e:
-        print(f"Error writing to worksheet '{worksheet.title}': {e}", flush=True)
+        logger.error("Error writing to worksheet '%s': %s", worksheet.title, e)
         traceback.print_exc()
         return False
 
@@ -208,34 +210,34 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
     # Refresh or obtain new credentials if necessary
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            print("Refreshing API credentials...", flush=True)
+            logger.info("Refreshing API credentials...")
             creds.refresh(Request())
         else:
-            print("Authenticating with Google OAuth...", flush=True)
+            logger.info("Authenticating with Google OAuth...")
             flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes)
             creds = flow.run_local_server(port=0)
         
         with open(token_pickle_file, 'wb') as token:
             pickle.dump(creds, token)
-        print("API credentials cached successfully.", flush=True)
+        logger.info("API credentials cached successfully.")
 
     try:
         service = build('script', 'v1', credentials=creds)
-        print(f"Executing Apps Script: {function_name}...", flush=True)
+        logger.info("Executing Apps Script: %s...", function_name)
         
         request_body = {"function": function_name}
         response = service.scripts().run(scriptId=script_id, body=request_body).execute()
         
         if 'error' in response:
             error_msg = response['error'].get('errorMessage', 'Execution error')
-            print(f"Apps Script Error: {error_msg}", flush=True)
+            logger.error("Apps Script Error: %s", error_msg)
             return False
         
-        print(f"Apps Script execution completed successfully.", flush=True)
+        logger.info("Apps Script execution completed successfully.")
         return True
 
     except Exception as e:
-        print(f"Failed to execute Apps Script: {e}", flush=True)
+        logger.error("Failed to execute Apps Script: %s", e)
         traceback.print_exc()
         return False
 
@@ -243,22 +245,22 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
 # [Main Execution]
 
 if __name__ == "__main__":
-    print("Initializing Google Sheets formatting workflow...", flush=True)
+    logger.info("Initializing Google Sheets formatting workflow...")
     
     # 1. Load data source
     routine_data = load_routine_data(SCRAPED_DATA_JSON_PATH)
     if not routine_data:
-        print("Data source empty. Termination sequence initiated.", flush=True)
+        logger.warning("Data source empty. Termination sequence initiated.")
         exit()
 
     # 2. Authenticate and establish connection
     gc = authenticate_gsheet(GOOGLE_SERVICE_ACCOUNT_KEY_FILE)
     if not gc:
-        print("Authentication failure. Exiting.", flush=True)
+        logger.error("Authentication failure. Exiting.")
         exit()
 
     try:
-        print(f"Opening spreadsheet: '{SPREADSHEET_NAME}'", flush=True)
+        logger.info("Opening spreadsheet: '%s'", SPREADSHEET_NAME)
         spreadsheet = gc.open(SPREADSHEET_NAME)
         
         # 3. Synchronize data with the 'backend' worksheet
@@ -271,24 +273,24 @@ if __name__ == "__main__":
         
         if target_ws:
             if write_data_to_sheet(target_ws, routine_data):
-                print("Spreadsheet synchronization successful.", flush=True)
+                logger.info("Spreadsheet synchronization successful.")
             else:
-                print("Synchronization failed.", flush=True)
+                logger.error("Synchronization failed.")
         else:
-            print("Target worksheet unreachable. Exiting.", flush=True)
+            logger.error("Target worksheet unreachable. Exiting.")
 
     except gspread.exceptions.SpreadsheetNotFound:
-        print(f"Error: Spreadsheet '{SPREADSHEET_NAME}' not found.", flush=True)
+        logger.error("Spreadsheet '%s' not found.", SPREADSHEET_NAME)
         exit()
     except Exception as e:
-        print(f"Critical error during synchronization: {e}", flush=True)
+        logger.error("Critical error during synchronization: %s", e)
         traceback.print_exc()
         exit()
 
     # 4. Trigger post-processing via Apps Script
-    print("\nTriggering post-processing workflow...", flush=True)
+    logger.info("\nTriggering post-processing workflow...")
     if APP_SCRIPT_ID == 'YOUR_APP_SCRIPT_ID_GOES_HERE':
-        print("Warning: APP_SCRIPT_ID is not configured.", flush=True)
+        logger.warning("APP_SCRIPT_ID is not configured.")
     else:
         call_success = call_apps_script_function(
             script_id=APP_SCRIPT_ID,
@@ -298,8 +300,8 @@ if __name__ == "__main__":
             scopes=APP_SCRIPT_SCOPES
         )
         if call_success:
-            print("Post-processing complete. Sheets updated.", flush=True)
+            logger.info("Post-processing complete. Sheets updated.")
         else:
-            print("Post-processing trigger failed.", flush=True)
+            logger.error("Post-processing trigger failed.")
 
-    print("Workflow execution finished.", flush=True)
+    logger.info("Workflow execution finished.")
