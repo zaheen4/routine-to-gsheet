@@ -29,7 +29,7 @@ Ensure the following software is installed on your system:
 * **Python 3.10+**
 * **pip** (Python package manager)
 * **Google Chrome** (Recommended; utilized with `undetected-chromedriver` for reliability).
-* **Xvfb** (Required for headless Linux environments, such as GitHub Actions).
+* **Xvfb** (Required for headless Linux environments).
 * **Google Account** with enabled access to Google Drive and Google Cloud Platform.
 
 ---
@@ -37,8 +37,6 @@ Ensure the following software is installed on your system:
 ## Project Structure
 ```text
 project_root/
-├── .github/workflows/          # CI/CD automation workflows
-│   └── run-routine-job.yml     # Scheduled routine scraper workflow
 ├── routine_scrapper.py         # Primary scraping logic for UCAM portal
 ├── gsheet_formatter.py         # Google Sheets API integration
 ├── config.py                   # Central runtime configuration
@@ -56,9 +54,6 @@ project_root/
 │   └── routine-automation.timer.example
 ├── output_of_fetched_routine/  # Local cache for scraped data
 ├── requirements.txt            # Project dependencies
-├── encode.py                   # Utility for GitHub Secrets encoding
-├── flatten.sh                  # Utility for local 'act' testing
-├── act_test.sh                 # Local CI/CD testing script
 ├── token.pickle                # Cached Google API authentication token
 └── README.md                   # Documentation
 ```
@@ -283,28 +278,6 @@ For reliable weekly automation on your local machine that runs even if the compu
    systemctl --user daemon-reload
    systemctl --user enable --now routine-automation.timer
    ```
-
-### GitHub Actions
-The workflow in `.github/workflows/run-routine-job.yml` can automate synchronization on a schedule. **Note**: This may be unreliable due to Cloudflare blocks on datacenter IP ranges.
-
-#### Configuration (Repository Secrets)
-Add the following secrets to your repository:
-* `UCAM_LOGIN_CREDENTIALS`: Content of `ucam_login_credentials.json`
-* `TEACHER_CONTACT_DETAILS`: Content of `teacher_contact_details.json`
-* `GOOGLE_SERVICE_ACCOUNT_KEY`: Content of `service_account_key.json`
-* `GOOGLE_OAUTH_CLIENT_SECRET`: Content of `oauth_client_secret.json`
-* `TOKEN_PICKLE_B64`: Base64 encoded string of `token.pickle`
-
-#### Encoding the Token
-Use the provided utility to generate the base64 string:
-```bash
-python3 encode.py
-```
-
-### Local Workflow Validation
-Test the action locally using [act](https://github.com/nektos/act):
-1. Run `./flatten.sh` to generate the `.secrets` file.
-2. Run `./act_test.sh` to execute the local test.
 
 ---
 
