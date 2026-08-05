@@ -16,6 +16,13 @@ logger.info("gsheet_formatter.py starting...")
 
 # [Configuration]
 TARGET_SHEET_NAME = 'backend'
+FUNCTION_NAME = 'triggerSortFromPython'
+
+# 8-column output headers
+SHEET_HEADERS = [
+    "Course", "Course Title", "Sect", "Day", "Room", "Time Slot", "Teacher", "Teacher Phone and Email"
+]
+CONTACT_COLUMN_HEADER = "Teacher Phone and Email"
 
 # [Path Constants]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -115,6 +122,49 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
         return None
     return worksheet
 
+
+def combine_contact_info(phone, email):
+    """
+    Combines teacher phone and email into a single cell value.
+    """
+    if phone and email:
+        return f"{phone}\n{email}"
+    return phone or email
+
+
+def build_sheet_data(data_to_write):
+    """
+    Converts routine entry dicts into the 2D list expected by the sheet
+    (header row followed by one row per entry). Returns None on bad input.
+    """
+    if not isinstance(data_to_write, list) or not data_to_write or not isinstance(data_to_write[0], dict):
+        return None
+
+    all_rows = [list(SHEET_HEADERS)]
+    for item in data_to_write:
+        all_rows.append([
+            item.get("CourseCode", ""),
+            item.get("CourseTitle", ""),
+            item.get("Section", ""),
+            item.get("Day", ""),
+            item.get("Room", ""),
+            item.get("TimeSlot", ""),
+            item.get("Teacher", ""),
+            combine_contact_info(item.get("TeacherPhone", ""), item.get("TeacherEmail", "")),
+        ])
+    return all_rows
+
+
+def contact_column_letter():
+    """
+    Returns the sheet column letter for the combined contact column (or "" if absent).
+    """
+    if CONTACT_COLUMN_HEADER not in SHEET_HEADERS:
+        return ""
+    col_idx = SHEET_HEADERS.index(CONTACT_COLUMN_HEADER) + 1
+    return gspread.utils.rowcol_to_a1(1, col_idx)[:-1]
+
+
 def write_data_to_sheet(worksheet, data_to_write):
     """
     Writes routine data to the worksheet with formatted headers and contact information.
@@ -133,47 +183,16 @@ def write_data_to_sheet(worksheet, data_to_write):
         worksheet.clear()
         logger.info("Cleared existing content in '%s'.", worksheet.title)
 
-        if not isinstance(data_to_write, list) or not data_to_write or not isinstance(data_to_write[0], dict):
+        all_rows = build_sheet_data(data_to_write)
+        if all_rows is None:
             logger.error("Invalid data format. Expected a list of dictionaries.")
             return False
 
-        # Define sheet headers
-        sheet_headers = [
-            "Course", "Course Title", "Sect", "Day", "Room", "Time Slot", "Teacher", "Teacher Phone and Email"
-        ]
-        
-        all_rows = [sheet_headers]
-        
-        for item in data_to_write:
-            teacher_phone = item.get("TeacherPhone", "")
-            teacher_email = item.get("TeacherEmail", "")
-            
-            # Combine contact details
-            contact_combined = ""
-            if teacher_phone and teacher_email:
-                contact_combined = f"{teacher_phone}\n{teacher_email}"
-            else:
-                contact_combined = teacher_phone or teacher_email
-            
-            row_values = [
-                item.get("CourseCode", ""),
-                item.get("CourseTitle", ""),
-                item.get("Section", ""),
-                item.get("Day", ""),
-                item.get("Room", ""),
-                item.get("TimeSlot", ""),
-                item.get("Teacher", ""),
-                contact_combined
-            ]
-            all_rows.append(row_values)
-            
         # Bulk update worksheet starting from A1
         worksheet.update(values=all_rows, range_name='A1')
-        
+
         # Apply WRAP strategy to the contact column (Column H)
-        contact_col_idx = sheet_headers.index("Teacher Phone and Email") + 1
-        contact_col_letter = gspread.utils.rowcol_to_a1(1, contact_col_idx)[:-1]
-        
+        contact_col_letter = contact_column_letter()
         if contact_col_letter:
             worksheet.format(
                 f"{contact_col_letter}2:{contact_col_letter}{len(all_rows)}", 
@@ -244,33 +263,33 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
 
 # [Main Execution]
 
-if __name__ == "__main__":
+def main():
     logger.info("Initializing Google Sheets formatting workflow...")
-    
+
     # 1. Load data source
     routine_data = load_routine_data(SCRAPED_DATA_JSON_PATH)
     if not routine_data:
         logger.warning("Data source empty. Termination sequence initiated.")
-        exit()
+        return
 
     # 2. Authenticate and establish connection
     gc = authenticate_gsheet(GOOGLE_SERVICE_ACCOUNT_KEY_FILE)
     if not gc:
         logger.error("Authentication failure. Exiting.")
-        exit()
+        return
 
     try:
         logger.info("Opening spreadsheet: '%s'", SPREADSHEET_NAME)
         spreadsheet = gc.open(SPREADSHEET_NAME)
-        
+
         # 3. Synchronize data with the 'backend' worksheet
         target_ws = get_or_create_worksheet(
-            spreadsheet, 
-            TARGET_SHEET_NAME, 
-            rows=len(routine_data)+5, 
-            cols=10
-        ) 
-        
+            spreadsheet,
+            TARGET_SHEET_NAME,
+            rows=len(routine_data) + 5,
+            cols=10,
+        )
+
         if target_ws:
             if write_data_to_sheet(target_ws, routine_data):
                 logger.info("Spreadsheet synchronization successful.")
@@ -281,11 +300,11 @@ if __name__ == "__main__":
 
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error("Spreadsheet '%s' not found.", SPREADSHEET_NAME)
-        exit()
+        return
     except Exception as e:
         logger.error("Critical error during synchronization: %s", e)
         traceback.print_exc()
-        exit()
+        return
 
     # 4. Trigger post-processing via Apps Script
     logger.info("\nTriggering post-processing workflow...")
@@ -294,10 +313,10 @@ if __name__ == "__main__":
     else:
         call_success = call_apps_script_function(
             script_id=APP_SCRIPT_ID,
-            function_name="triggerSortFromPython",
+            function_name=FUNCTION_NAME,
             client_secrets_file=GOOGLE_OAUTH_CLIENT_SECRET_FILE,
             token_pickle_file=TOKEN_PICKLE_FILE,
-            scopes=APP_SCRIPT_SCOPES
+            scopes=APP_SCRIPT_SCOPES,
         )
         if call_success:
             logger.info("Post-processing complete. Sheets updated.")
@@ -305,3 +324,7 @@ if __name__ == "__main__":
             logger.error("Post-processing trigger failed.")
 
     logger.info("Workflow execution finished.")
+
+
+if __name__ == "__main__":
+    main()
