@@ -91,8 +91,11 @@ cp .env.example .env
 ```env
 PREFERRED_BROWSER=chrome   # Options: "chrome", "firefox"
 HEADLESS=false             # Set to true to run without a visible window
+#CHROME_BINARY_PATH=/usr/bin/google-chrome-stable   # Pin a specific Chrome/Chromium binary
 LOG_LEVEL=INFO             # Options: DEBUG, INFO, WARNING, ERROR
 ```
+
+When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` to force a specific binary (useful when both Google Chrome and Chromium are installed).
 
 ### 4. Configuration
 1. **UCAM Credentials**: Rename `configs_to_edit/ucam_login_credentials.json.example` to `ucam_login_credentials.json` and provide your credentials.
