@@ -264,98 +264,162 @@ def build_final_routine(all_collected_data, primary_section, secondary_section, 
 
 # [Web Scraping Logic]
 
-def scrape_dashboard_for_user(driver, user_creds, common_urls):
-    """
-    Executes the scraping workflow for a specific user profile.
-    """
-    user_dashboard_data = []
-    section_label = user_creds['section_label']
+# UCAM portal DOM selector constants
+MASKING_URL = "https://www.google.com"
+MASKING_SETTLE_S = 3
+PORTAL_GET_SETTLE_S = 15
+CLOUDFLARE_COOLDOWN_S = 5
+SEMESTER_SELECT_SETTLE_S = 5
+PORTAL_ACCESS_ATTEMPTS = 3
+LOGIN_WAIT_S = 20
+LOGIN_FIELD_WAIT_S = 10
+LOGIN_SUCCESS_WAIT_S = 45
+SEMESTER_WAIT_S = 20
+COURSE_TABLE_WAIT_S = 45
 
-    logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
-    
-    # 1. Establish context by visiting a neutral site first
+LOGIN_USERNAME_ID = "logMain_UserName"
+LOGIN_PASSWORD_ID = "logMain_Password"
+LOGIN_BUTTON_ID = "logMain_Button1"
+LOGIN_SUCCESS_ID = "ctl00_lbtnUserName"
+SEMESTER_DROPDOWN_ID = "ctl00_MainContainer_ddlHeldIn"
+UPDATE_PANEL_ID = "ctl00_MainContainer_UpdatePanel02"
+COURSE_TABLE_ID = "ctl00_MainContainer_gvCourseList"
+
+CLOUDFLARE_TITLE_MARKERS = ("just a moment", "cloudflare", "attention required")
+
+
+def _is_cloudflare_blocked(page_title):
+    lowered = (page_title or "").lower()
+    return any(marker in lowered for marker in CLOUDFLARE_TITLE_MARKERS)
+
+
+def masking_visit(driver, url=MASKING_URL, settle_s=MASKING_SETTLE_S):
+    """
+    Visits a neutral site first to establish browsing context before the portal.
+    """
     try:
         logger.info("Masking entry: Establishing context via Google...")
-        driver.get("https://www.google.com")
-        time.sleep(3)
-    except: pass
+        driver.get(url)
+        time.sleep(settle_s)
+    except Exception:
+        logger.exception("Masking visit failed; continuing anyway.")
 
-    # 2. Portal Authentication
-    try:
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            logger.info("Portal access attempt %d to: %s", attempt, common_urls['login_url'])
-            driver.get(common_urls['login_url'])
-            
-            # Allow extended time for Cloudflare background checks
-            time.sleep(15) 
-            page_title = driver.title
-            logger.info("Current Page Title: '%s'", page_title)
-            
-            if "Just a moment" in page_title or "Cloudflare" in page_title or "Attention Required" in page_title:
-                logger.info("Cloudflare block persisting. Refreshing session (Attempt %d)...", attempt)
-                time.sleep(5)
-                continue
-            
-            try:
-                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "logMain_UserName")))
-                logger.info("UCAM Login fields detected. Challenge likely bypassed.")
-                break
-            except TimeoutException:
-                if attempt == max_attempts:
-                    logger.error("Critical: Failed to bypass Cloudflare after maximum retries.")
-                    logger.error("Page Snippet: %s", driver.page_source[:500])
-                    raise TimeoutException("Cloudflare challenge block.")
-                logger.info("Retrying portal access...")
 
-        logger.info("Authenticating with student credentials...")
-        user_field = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.ID, "logMain_UserName")))
-        pass_field = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Password")))
-        login_btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "logMain_Button1")))
-        
-        user_field.send_keys(user_creds['username'])
-        pass_field.send_keys(user_creds['password'])
-        login_btn.click()
-        
-        WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, "ctl00_lbtnUserName")))
-        logger.info("User %s authenticated successfully.", user_creds['id'])
-    except Exception as e:
-        logger.error("Authentication Failure: %s | URL: %s", type(e).__name__, driver.current_url)
-        raise e
+def bypass_cloudflare_and_wait_for_login(driver, login_url, max_attempts=PORTAL_ACCESS_ATTEMPTS):
+    """
+    Opens the login page, retrying until Cloudflare lets us through and the
+    UCAM login fields render. Raises TimeoutException if blocked for good.
+    """
+    for attempt in range(1, max_attempts + 1):
+        logger.info("Portal access attempt %d to: %s", attempt, login_url)
+        driver.get(login_url)
 
-    # 3. Navigation to Dashboard
-    driver.get(common_urls['attendance_dashboard_url'])
-    semester_dropdown_id = "ctl00_MainContainer_ddlHeldIn"
-    WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, semester_dropdown_id)))
+        time.sleep(PORTAL_GET_SETTLE_S)
+        page_title = driver.title
+        logger.info("Current Page Title: '%s'", page_title)
 
-    original_select = WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, semester_dropdown_id)))
+        if _is_cloudflare_blocked(page_title):
+            logger.info("Cloudflare block persisting. Refreshing session (Attempt %d)...", attempt)
+            time.sleep(CLOUDFLARE_COOLDOWN_S)
+            continue
+
+        try:
+            WebDriverWait(driver, LOGIN_WAIT_S).until(
+                EC.presence_of_element_located((By.ID, LOGIN_USERNAME_ID))
+            )
+            logger.info("UCAM Login fields detected. Challenge likely bypassed.")
+            return
+        except TimeoutException:
+            if attempt == max_attempts:
+                logger.error("Critical: Failed to bypass Cloudflare after maximum retries.")
+                logger.error("Page Snippet: %s", driver.page_source[:500])
+                raise TimeoutException("Cloudflare challenge block.") from None
+            logger.info("Retrying portal access...")
+
+
+def authenticate(user_creds, driver):
+    """
+    Fills the UCAM login form and waits for the post-login element to appear.
+    """
+    logger.info("Authenticating with student credentials...")
+    user_field = WebDriverWait(driver, LOGIN_WAIT_S).until(
+        EC.element_to_be_clickable((By.ID, LOGIN_USERNAME_ID))
+    )
+    pass_field = WebDriverWait(driver, LOGIN_FIELD_WAIT_S).until(
+        EC.element_to_be_clickable((By.ID, LOGIN_PASSWORD_ID))
+    )
+    login_btn = WebDriverWait(driver, LOGIN_FIELD_WAIT_S).until(
+        EC.element_to_be_clickable((By.ID, LOGIN_BUTTON_ID))
+    )
+
+    user_field.send_keys(user_creds['username'])
+    pass_field.send_keys(user_creds['password'])
+    login_btn.click()
+
+    WebDriverWait(driver, LOGIN_SUCCESS_WAIT_S).until(
+        EC.presence_of_element_located((By.ID, LOGIN_SUCCESS_ID))
+    )
+    logger.info("User %s authenticated successfully.", user_creds['id'])
+
+
+def select_semester(driver, attendance_dashboard_url, section_label):
+    """
+    Navigates to the dashboard and selects the first non-placeholder semester
+    through the select2 control. Returns the chosen semester label.
+    """
+    driver.get(attendance_dashboard_url)
+    WebDriverWait(driver, COURSE_TABLE_WAIT_S).until(
+        EC.presence_of_element_located((By.ID, SEMESTER_DROPDOWN_ID))
+    )
+
+    original_select = WebDriverWait(driver, SEMESTER_WAIT_S).until(
+        EC.presence_of_element_located((By.ID, SEMESTER_DROPDOWN_ID))
+    )
     options = original_select.find_elements(By.TAG_NAME, "option")
-    target_semester = next((opt.text for opt in options if opt.get_attribute("value") != "0"), None)
+    target_semester = next(
+        (opt.text for opt in options if opt.get_attribute("value") != "0"),
+        None,
+    )
 
     if not target_semester:
-        raise Exception(f"No valid semester options found for section {section_label}.")
+        raise ValueError(f"No valid semester options found for section {section_label}.")
 
-    s2_container = f"//select[@id='{semester_dropdown_id}']/following-sibling::span[contains(@class,'select2-container')]"
-    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_container))).click()
+    s2_container = (
+        f"//select[@id='{SEMESTER_DROPDOWN_ID}']/"
+        f"following-sibling::span[contains(@class,'select2-container')]"
+    )
+    WebDriverWait(driver, SEMESTER_WAIT_S).until(
+        EC.element_to_be_clickable((By.XPATH, s2_container))
+    ).click()
 
     s2_option = f"//span[contains(@class, 'select2-results')]//li[text()=\"{target_semester}\"]"
-    WebDriverWait(driver, 20).until(EC.element_to_be_clickable((By.XPATH, s2_option))).click()
+    WebDriverWait(driver, SEMESTER_WAIT_S).until(
+        EC.element_to_be_clickable((By.XPATH, s2_option))
+    ).click()
 
     logger.info("Dashboard synchronized for semester: %s.", target_semester)
-    time.sleep(5) 
+    time.sleep(SEMESTER_SELECT_SETTLE_S)
+    return target_semester
 
-    # 4. Content Extraction
-    update_panel_id = "ctl00_MainContainer_UpdatePanel02"
-    WebDriverWait(driver, 45).until(
-        EC.presence_of_element_located((By.XPATH, f"//div[@id='{update_panel_id}']//table[@id='ctl00_MainContainer_gvCourseList']"))
+
+def extract_dashboard(driver, section_label):
+    """
+    Reads the course list table HTML from the dashboard panel and persists the
+    parsed entries to per-section CSV/JSON files.
+    """
+    WebDriverWait(driver, COURSE_TABLE_WAIT_S).until(
+        EC.presence_of_element_located(
+            (By.XPATH, f"//div[@id='{UPDATE_PANEL_ID}']//table[@id='{COURSE_TABLE_ID}']")
+        )
     )
-    
-    dashboard_html = driver.find_element(By.ID, update_panel_id).get_attribute('innerHTML')
+
+    dashboard_html = driver.find_element(By.ID, UPDATE_PANEL_ID).get_attribute('innerHTML')
+    user_dashboard_data = []
 
     if dashboard_html:
         os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
         user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
-        
+
         if user_dashboard_data:
             dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
             dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
@@ -363,6 +427,26 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
             save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
 
     return user_dashboard_data
+
+
+def scrape_dashboard_for_user(driver, user_creds, common_urls):
+    """
+    Executes the scraping workflow for a specific user profile.
+    """
+    section_label = user_creds['section_label']
+    logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
+
+    masking_visit(driver)
+
+    try:
+        bypass_cloudflare_and_wait_for_login(driver, common_urls['login_url'])
+        authenticate(user_creds, driver)
+    except Exception as e:
+        logger.error("Authentication Failure: %s | URL: %s", type(e).__name__, driver.current_url)
+        raise
+
+    select_semester(driver, common_urls['attendance_dashboard_url'], section_label)
+    return extract_dashboard(driver, section_label)
 
 def get_chrome_major_version():
     """
