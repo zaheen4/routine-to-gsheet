@@ -41,6 +41,9 @@ project_root/
 │   └── run-routine-job.yml     # Scheduled routine scraper workflow
 ├── routine_scrapper.py         # Primary scraping logic for UCAM portal
 ├── gsheet_formatter.py         # Google Sheets API integration
+├── config.py                   # Central runtime configuration
+├── .env.example                # Environment variable overrides template
+├── tests/                      # Unit test suite (pytest)
 ├── configs_to_edit/            # User configuration directory
 │   ├── ucam_login_credentials.json.example
 │   └── teacher_contact_details.json.example
@@ -85,10 +88,15 @@ python3 -m venv venv && source venv/bin/activate && pip install -r requirements.
 python -m venv venv; .\venv\Scripts\activate; pip install -r requirements.txt
 ```
 
-### 3. Browser Configuration
-Set your `PREFERRED_BROWSER` in `routine_scrapper.py`:
-```python
-PREFERRED_BROWSER = "chrome"  # Options: "chrome", "firefox"
+### 3. Browser and Runtime Configuration
+Runtime settings are centralized in `config.py` and read from environment variables (optionally via a `.env` file). Copy `.env.example` to `.env` and adjust if the defaults don't apply:
+```bash
+cp .env.example .env
+```
+```env
+PREFERRED_BROWSER=chrome   # Options: "chrome", "firefox"
+HEADLESS=false             # Set to true to run without a visible window
+LOG_LEVEL=INFO             # Options: DEBUG, INFO, WARNING, ERROR
 ```
 
 ### 4. Configuration
@@ -112,7 +120,7 @@ Enable the following APIs in the [Google Cloud Console](https://console.cloud.go
 2. Download the JSON, rename it to `oauth_client_secret.json`, and place it in `google_cloud_keys/`.
 
 ### 6. Script Configuration
-Update the following variables in `gsheet_formatter.py`:
+Update the following variables in `config.py` (or override them in your `.env`):
 * `SPREADSHEET_NAME`: The exact name of your Google Spreadsheet.
 * `TARGET_SHEET_NAME`: Set to `'backend'`.
 * `APP_SCRIPT_ID`: Obtained in the next step.
@@ -225,7 +233,7 @@ function parseAndFormatTime(timeStr) {
 </details>
 
 3. **Deploy** as an **API Executable**.
-4. Copy the **Script ID** into `gsheet_formatter.py`.
+4. Copy the **Script ID** into `config.py` (or `.env` as `APP_SCRIPT_ID`).
 
 ---
 
@@ -236,11 +244,22 @@ function parseAndFormatTime(timeStr) {
    ```bash
    python3 routine_scrapper.py
    ```
+   *Note: On headless Linux, run via `xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 routine_scrapper.py`.*
 2. **Update Sheets**:
    ```bash
    python3 gsheet_formatter.py
    ```
    *Note: On the first execution, an OAuth consent window will open in your browser to generate `token.pickle`.*
+
+---
+
+## Testing
+
+Run the unit test suite (covers dashboard parsing, merge logic, browser workflow steps, and sheet-building helpers):
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+```
 
 ---
 
