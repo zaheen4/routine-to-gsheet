@@ -48,11 +48,13 @@ project_root/
 │   ├── service_account_key.json.example.txt
 │   └── oauth_client_secret.json.example.txt
 ├── scripts/                    # Local automation and helper scripts
-│   ├── run_routine.sh          # Portable runner script
+│   ├── run_routine.sh          # Runner script (Unix/macOS)
+│   ├── run_routine.bat         # Runner script (Windows)
 │   ├── setup.py                # Config scaffold + validation
 │   ├── check_setup.py          # Online preflight check
 │   ├── routine-automation.service.example
-│   └── routine-automation.timer.example
+│   ├── routine-automation.timer.example
+│   └── routine-automation.plist.example
 ├── output_of_fetched_routine/  # Local cache for scraped data
 ├── requirements.txt            # Project dependencies
 ├── token.pickle                # Cached Google API authentication token
@@ -89,7 +91,7 @@ Then edit the real files it creates — your UCAM login (`configs_to_edit/ucam_l
 
 The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
 
-When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` in `.env` to force a specific binary (useful when both Google Chrome and Chromium are installed).
+When using Chrome, the scraper auto-detects the browser binary (PATH scan on Linux, the well-known `.app` bundle path on macOS, Program Files / `%LOCALAPPDATA%` on Windows) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` in `.env` to force a specific binary (useful when both Google Chrome and Chromium are installed).
 
 ---
 
@@ -106,6 +108,8 @@ When using Chrome, the scraper auto-detects the browser binary (preferring `goog
    ```
    *Note: On the first execution, an OAuth consent window will open in your browser to generate `token.pickle`.*
 
+To run both stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
+
 ---
 
 ## Testing
@@ -120,7 +124,7 @@ Run the unit test suite (covers dashboard parsing, merge logic, browser workflow
 
 ## Automation
 
-Weekly automation via a systemd user timer is documented in **SETUP.md Phase D**.
+Weekly automation — a systemd timer (Linux), Task Scheduler (Windows), or a launchd agent (macOS) — is documented in **SETUP.md Phase D**.
 
 ---
 

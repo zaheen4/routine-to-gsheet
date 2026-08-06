@@ -94,8 +94,12 @@ pip install -r requirements.txt
 
 ### B2. Install system dependencies
 
-- **Chrome or Chromium** — the scraper auto-detects the binary (prefers `google-chrome-stable`) and downloads a matching chromedriver automatically. If you have both installed and hit a version mismatch, pin one via `CHROME_BINARY_PATH` in `.env`.
-- **Xvfb** — only needed on Linux without a desktop, so the scraper can run headless.
+- **Chrome or Chromium** — the scraper auto-detects the binary and downloads a matching chromedriver automatically: a PATH scan on Linux (`google-chrome-stable`, `google-chrome`, `chromium-browser`, `chromium`), the well-known `.app` bundle path on macOS, and Program Files / `%LOCALAPPDATA%` on Windows. If you have both Google Chrome and Chromium installed and hit a version mismatch, pin one via `CHROME_BINARY_PATH` in `.env`.
+- **Xvfb** — only needed on Linux without a desktop, so the scraper can run headless. Not required on macOS or Windows.
+
+> **macOS Gatekeeper**: the first scrape downloads a chromedriver binary that macOS may quarantine ("cannot be opened because the developer cannot be verified"). If that happens, clear the quarantine once with `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (adjust to the path in the error).
+>
+> **Windows Defender**: `undetected-chromedriver` patches Chrome and Windows Defender sometimes flags/quarantines it as a hacktool. If the driver keeps disappearing, add exclusions for the project folder and your Python install, then re-run the scraper to re-download it.
 
 ### B3. Scaffold the configuration
 
@@ -170,6 +174,8 @@ xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" .venv/bin/pytho
 
 This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routine/final_combined_routine.json`.
 
+> All commands here use `.venv/bin/python` (Unix/macOS); on Windows use `.\venv\Scripts\python.exe`. To run both stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
+
 ### C2. Format and sync to Google Sheets
 
 ```bash
@@ -187,9 +193,11 @@ This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routin
 
 ---
 
-## Phase D — Optional Automation (Linux systemd)
+## Phase D — Optional Automation
 
-To run the pipeline automatically every Saturday at 19:00 (with catch-up if the machine was off):
+Pick the mechanism for your OS. All three run the same two scripts weekly on Saturday at 19:00 and catch up if the machine was off.
+
+### D1. Linux — systemd user timer
 
 ```bash
 mkdir -p ~/.config/systemd/user/
@@ -200,6 +208,27 @@ systemctl --user enable --now routine-automation.timer
 ```
 
 Check the next run with `systemctl --user list-timers`.
+
+### D2. Windows — Task Scheduler
+
+From a PowerShell window, register a weekly task that runs the batch runner. Use the **absolute path** to `run_routine.bat` (scheduled tasks do not inherit your working directory):
+
+```powershell
+schtasks /create /tn "RoutineSync" /tr "C:\path\to\routine-to-gsheet\scripts\run_routine.bat" /sc weekly /d SAT /st 19:00 /f
+```
+
+Inspect or remove it with `schtasks /query /tn RoutineSync` / `schtasks /delete /tn RoutineSync /f`. Scheduled runs have no interactive desktop for Chrome, so set `HEADLESS=true` in `.env` for automation on Windows.
+
+### D3. macOS — launchd LaunchAgent
+
+A LaunchAgent runs inside your logged-in GUI session, so Chrome and the OAuth browser behave like a normal terminal run (no `HEADLESS` needed). Install the example agent:
+
+```bash
+sed "s|/path/to/your/project|$(pwd)|g" scripts/routine-automation.plist.example > ~/Library/LaunchAgents/com.user.routine-automation.plist
+launchctl load ~/Library/LaunchAgents/com.user.routine-automation.plist
+```
+
+It fires every Saturday at 19:00 while you're logged in. Confirm with `launchctl list | grep routine-automation`; unload with `launchctl unload ~/Library/LaunchAgents/com.user.routine-automation.plist`.
 
 ---
 
@@ -223,7 +252,9 @@ It verifies the local files are valid, that the spreadsheet opens with your serv
 | `403 ... The caller does not have permission` | Service account lacks access | Same as above. |
 | OAuth window shows **"access blocked"** | Consent screen is External but your email isn't a **test user** | Add your email under **OAuth consent screen > Test users**. |
 | Formatter says **re-auth required** / fails fast | `token.pickle` missing or refresh token expired | Run `gsheet_formatter.py` once from a session with a display. If this keeps recurring every ~week, your OAuth app is still in **Testing** mode — publish to Production (A4). |
-| **ChromeDriver version mismatch** error | Both Google Chrome and Chromium installed; wrong binary chosen | Set `CHROME_BINARY_PATH` in `.env` to your preferred binary (e.g. `/usr/bin/google-chrome-stable`). |
+| **ChromeDriver version mismatch** error | Both Google Chrome and Chromium installed; wrong binary chosen | Set `CHROME_BINARY_PATH` in `.env` to your preferred binary (e.g. `/usr/bin/google-chrome-stable` on Linux, `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS, or the `chrome.exe` path on Windows). |
+| chromedriver blocked on macOS: **"cannot be opened because the developer cannot be verified"** | Gatekeeper quarantined the downloaded driver | Clear the quarantine once: `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (or the path in the error). |
+| chromedriver keeps disappearing on Windows | Windows Defender flagged `undetected-chromedriver` as a hacktool | Add an exclusion for the project folder and your Python install, then re-run the scraper to re-download it. |
 | `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
 | Formatter warns `APP_SCRIPT_ID is not configured` | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
 
@@ -242,6 +273,6 @@ You only need to repeat:
    - `google_cloud_keys/oauth_client_secret.json`
    - `.env`
    - `token.pickle` (or run the formatter once interactively to regenerate it)
-4. Optionally reinstall the systemd timer (Phase D).
+4. Optionally reinstall automation (Phase D): systemd timer (Linux), Task Scheduler (Windows), or the launchd agent (macOS).
 
 Nothing on the Google side changes — the same spreadsheet, service account, OAuth client, and Apps Script deployment are reused.
