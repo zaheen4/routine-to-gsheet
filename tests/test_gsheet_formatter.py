@@ -186,3 +186,60 @@ def test_write_data_to_sheet_empty_returns_false():
 def test_write_data_to_sheet_invalid_returns_false():
     ws = _FakeWorksheet("backend")
     assert gf.write_data_to_sheet(ws, [["not", "dict"]]) is False
+
+
+# ----------------------------- _headless_environment -----------------------------
+
+def test_headless_environment_true_without_display(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert gf._headless_environment() is True
+
+
+def test_headless_environment_false_with_display(monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert gf._headless_environment() is False
+
+
+def test_headless_environment_false_on_windows(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(gf.os, "name", "nt")
+    assert gf._headless_environment() is False
+
+
+# ----------------------------- call_apps_script_function fail-fast -----------------------------
+
+def test_call_apps_script_function_fails_fast_headless(monkeypatch, tmp_path):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    token_file = tmp_path / "token.pickle"
+    result = gf.call_apps_script_function(
+        "script_id", "func", "client.json", str(token_file), []
+    )
+    assert result is False
+
+
+def test_call_apps_script_function_not_headless_calls_run_local_server(monkeypatch, tmp_path):
+    monkeypatch.setenv("DISPLAY", ":0")
+    token_file = tmp_path / "token.pickle"
+    calls = {"flow_called": False}
+
+    class _FakeFlow:
+        def run_local_server(self, port):
+            calls["flow_called"] = True
+            calls["port"] = port
+            return "fake_creds"
+
+    def _fake_from_client_secrets_file(*args, **kwargs):
+        return _FakeFlow()
+
+    monkeypatch.setattr(gf.InstalledAppFlow, "from_client_secrets_file", _fake_from_client_secrets_file)
+    monkeypatch.setattr(gf.pickle, "dump", lambda *a, **k: None)
+
+    result = gf.call_apps_script_function(
+        "script_id", "func", "client.json", str(token_file), []
+    )
+    assert calls["flow_called"] is True
+    assert result is False  # build() raises on fake creds -> caught by except
