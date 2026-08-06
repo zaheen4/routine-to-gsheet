@@ -213,6 +213,19 @@ def write_data_to_sheet(worksheet, data_to_write):
         traceback.print_exc()
         return False
 
+def _headless_environment():
+    """Return True when no display/Wayland session is available.
+
+    Used to fail fast instead of hanging when a token re-auth is needed:
+    under the systemd timer there is no DISPLAY/WAYLAND_DISPLAY and no
+    browser can open the OAuth consent page, so run_local_server() would
+    wait until the service timeout.
+    """
+    if os.name == "nt":
+        return False
+    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def call_apps_script_function(script_id, function_name, client_secrets_file, token_pickle_file, scopes):
     """
     Authenticates and executes a Google Apps Script function via the API.
@@ -238,6 +251,15 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
             logger.info("Refreshing API credentials...")
             creds.refresh(Request())
         else:
+            if _headless_environment():
+                logger.error(
+                    "Cached token is missing or expired with no refresh token. "
+                    "Re-authentication requires a browser session: run "
+                    "'gsheet_formatter.py' interactively once (with a DISPLAY) to "
+                    "complete the OAuth flow and refresh '%s'.",
+                    token_pickle_file,
+                )
+                return False
             logger.info("Authenticating with Google OAuth...")
             flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes)
             creds = flow.run_local_server(port=0)
