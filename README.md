@@ -96,12 +96,13 @@ Runtime settings are centralized in `config.py` and read from environment variab
 cp .env.example .env
 ```
 ```env
-PREFERRED_BROWSER=chrome   # Options: "chrome", "firefox"
-HEADLESS=false             # Set to true to run without a visible window
+PREFERRED_BROWSER=chrome            # Options: "chrome", "firefox"
+HEADLESS=false                      # Set to true to run without a visible window
 #CHROME_BINARY_PATH=/usr/bin/google-chrome-stable   # Pin a specific Chrome/Chromium binary
 SPREADSHEET_NAME=CSE-03_B_ClassRoutine   # Exact name of your Google Spreadsheet
-APP_SCRIPT_ID=your_script_id             # From the Apps Script deployment (section 6)
-LOG_LEVEL=INFO             # Options: DEBUG, INFO, WARNING, ERROR
+TARGET_SHEET_NAME=backend           # Raw-data worksheet; keep in sync with apps_script/Code.gs
+APP_SCRIPT_ID=YOUR_APP_SCRIPT_ID_GOES_HERE   # From the Apps Script deployment (SETUP.md Phase A6)
+LOG_LEVEL=INFO                      # Options: DEBUG, INFO, WARNING, ERROR
 ```
 
 When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` to force a specific binary (useful when both Google Chrome and Chromium are installed).
@@ -111,33 +112,8 @@ Run `python scripts/setup.py` to copy the template files to their real names and
 1. **UCAM Credentials**: Copy `configs_to_edit/ucam_login_credentials.json.example.txt` to `ucam_login_credentials.json` and provide your credentials.
 2. **Teacher Details**: Copy `configs_to_edit/teacher_contact_details.json.example.txt` to `teacher_contact_details.json` and populate as needed.
 
-### 5. Google Cloud Platform Setup
-Enable the following APIs in the [Google Cloud Console](https://console.cloud.google.com/):
-* Google Sheets API
-* Google Apps Script API
-* Google Drive API
-
-#### Service Account Key
-1. Create a Service Account under **IAM & Admin > Service Accounts**.
-2. Assign the **Editor** role.
-3. Generate a JSON key, rename it to `service_account_key.json`, and place it in `google_cloud_keys/`.
-4. **Note**: Share your target Google Sheet with the `client_email` found in the JSON file.
-
-#### OAuth Client ID
-1. Create an **OAuth client ID** (Desktop app) under **APIs & Services > Credentials**.
-2. Download the JSON, rename it to `oauth_client_secret.json`, and place it in `google_cloud_keys/`.
-
-### 6. Script Configuration
-Update the following variables in `config.py` (or override them in your `.env`):
-* `SPREADSHEET_NAME`: The exact name of your Google Spreadsheet.
-* `TARGET_SHEET_NAME`: Name of the worksheet that raw data is written to. Defaults to `'backend'`; only override if you also update the sheet names in the Apps Script below.
-* `APP_SCRIPT_ID`: Obtained in the next step. Set it in `.env` (or directly in `config.py`).
-
-#### Google Apps Script Deployment
-1. Open your Google Sheet and navigate to **Extensions > Apps Script**.
-2. Delete any stub code and paste the **entire** contents of [`apps_script/Code.gs`](apps_script/Code.gs).
-3. **Deploy** as an **API Executable**.
-4. Copy the **Script ID** into your `.env` as `APP_SCRIPT_ID` (or directly into `config.py`).
+### 5. Google Cloud Setup and Apps Script
+The complete Google Cloud walkthrough lives in **SETUP.md Phase A**: enabling the Sheets/Apps Script/Drive APIs, creating and sharing a service account, configuring the OAuth consent screen (and publishing to Production so tokens don't expire weekly), and deploying `apps_script/Code.gs` as an API Executable. Put the deployment's Script ID in `.env` as `APP_SCRIPT_ID`.
 
 The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
 
@@ -171,24 +147,7 @@ Run the unit test suite (covers dashboard parsing, merge logic, browser workflow
 
 ## Automation
 
-### Local Automation (Linux Systemd)
-For reliable weekly automation on your local machine that runs even if the computer was off at the scheduled time:
-
-1. **Setup Config Directories**:
-   ```bash
-   mkdir -p ~/.config/systemd/user/
-   ```
-2. **Configure and Install Service**:
-   Run this command from the project root to automatically generate the service with the correct paths:
-   ```bash
-   sed "s|/path/to/your/project|$(pwd)|g" scripts/routine-automation.service.example > ~/.config/systemd/user/routine-automation.service
-   cp scripts/routine-automation.timer.example ~/.config/systemd/user/routine-automation.timer
-   ```
-3. **Activate**:
-   ```bash
-   systemctl --user daemon-reload
-   systemctl --user enable --now routine-automation.timer
-   ```
+Weekly automation via a systemd user timer is documented in **SETUP.md Phase D**.
 
 ---
 
@@ -202,6 +161,5 @@ Before your first run, run the preflight check: `python scripts/check_setup.py`.
 ---
 
 ## Troubleshooting
-* **Permissions**: Ensure the target sheet is shared with the Service Account email.
-* **API Limits**: Check the Google Cloud Console for quota errors if updates fail.
-* **Selectors**: If UCAM updates their UI, the scraping logic in `routine_scrapper.py` may require adjustments.
+
+A troubleshooting table (spreadsheet not shared, consent blocked, 7-day token expiry, ChromeDriver version mismatch, and more) lives in **SETUP.md**.
