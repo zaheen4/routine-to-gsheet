@@ -25,10 +25,8 @@ CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")
 
 # Google Spreadsheet & Apps Script configuration
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "CSE-03_B_ClassRoutine")
-APP_SCRIPT_ID = os.getenv(
-    "APP_SCRIPT_ID",
-    "AKfycbxEHGHqGrOQkLOpyikkjGLZ1cf-g0YfUW1dXmqWX6PUOoFxEPIr7FoeQ8e74-euTg",
-)
+TARGET_SHEET_NAME = os.getenv("TARGET_SHEET_NAME", "backend")
+APP_SCRIPT_ID = os.getenv("APP_SCRIPT_ID", "YOUR_APP_SCRIPT_ID_GOES_HERE")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
