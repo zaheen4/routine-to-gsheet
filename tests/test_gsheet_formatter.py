@@ -147,6 +147,24 @@ def test_get_or_create_worksheet_creates_new():
     assert ("backend", 15, 10) in ss.created
 
 
+def test_get_or_create_worksheet_seeds_headers_on_create():
+    ss = _FakeSpreadsheet(not_found=True)
+    ws = gf.get_or_create_worksheet(ss, "NewMain", rows=30, cols=10, seed_headers=True)
+    assert ws is not None
+    assert ("NewMain", 30, 10) in ss.created
+    assert ws.updated == ([gf.SHEET_HEADERS], 'B3')
+    assert ws.formatted == ("B3:I3", {'textFormat': {'bold': True}})
+
+
+def test_get_or_create_worksheet_existing_does_not_overwrite():
+    ws = _FakeWorksheet("NewMain")
+    ss = _FakeSpreadsheet(existing={"NewMain": ws})
+    result = gf.get_or_create_worksheet(ss, "NewMain", seed_headers=True)
+    assert result is ws
+    assert ws.updated is None
+    assert ws.formatted is None
+
+
 # ----------------------------- write_data_to_sheet -----------------------------
 
 def test_write_data_to_sheet_success():
