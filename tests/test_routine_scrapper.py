@@ -326,6 +326,50 @@ def test_get_chrome_executable_no_binary(monkeypatch):
     assert rs.get_chrome_executable() is None
 
 
+def test_platform_chrome_candidates_macos(monkeypatch):
+    monkeypatch.setattr(rs.sys, "platform", "darwin")
+    candidates = rs._platform_chrome_candidates()
+    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
+    assert "/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
+
+
+def test_platform_chrome_candidates_windows(monkeypatch):
+    monkeypatch.setattr(rs.os, "name", "nt")
+    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
+    candidates = rs._platform_chrome_candidates()
+    assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
+    assert os.path.join("C:\\Users\\u\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe") in candidates
+
+
+def test_platform_chrome_candidates_linux_empty(monkeypatch):
+    monkeypatch.setattr(rs.sys, "platform", "linux")
+    assert rs._platform_chrome_candidates() == []
+
+
+def test_platform_chrome_candidates_windows_dedupes(monkeypatch):
+    monkeypatch.setattr(rs.os, "name", "nt")
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
+    monkeypatch.setenv("ProgramW6432", "C:\\Program Files")
+    candidates = rs._platform_chrome_candidates()
+    expected = os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")
+    assert candidates.count(expected) == 1
+
+
+def test_get_chrome_executable_uses_well_known_path(monkeypatch):
+    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
+    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
+    fake = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    monkeypatch.setattr(rs, "_platform_chrome_candidates", lambda: [fake])
+    monkeypatch.setattr(rs.os.path, "isfile", lambda p: p == fake)
+    assert rs.get_chrome_executable() == fake
+
+
 def test_get_chrome_major_version_parses(monkeypatch):
     monkeypatch.setattr(rs.subprocess, "check_output", lambda *a, **k: b"Google Chrome 148.0.7778.96\n")
     assert rs.get_chrome_major_version("/usr/bin/google-chrome-stable") == 148
