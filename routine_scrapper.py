@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 import subprocess
 import traceback
@@ -479,13 +480,43 @@ def scrape_dashboard_for_user(driver, user_creds, common_urls):
 
 CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
 
+def _platform_chrome_candidates():
+    """
+    Well-known Chrome/Chromium install paths, by platform.
+
+    macOS .app bundles and Windows Program Files installs are not on PATH,
+    so `shutil.which` cannot find them. Returns deduplicated candidate paths
+    (empty on Linux, where PATH-scan names above are the only option).
+    """
+    candidates = []
+    if sys.platform == "darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif os.name == "nt":
+        bases = [
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramW6432"),
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ]
+        for base in bases:
+            if not base:
+                continue
+            candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+            candidates.append(os.path.join(base, "Chromium", "Application", "chrome.exe"))
+    seen = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))]
+
 def get_chrome_executable():
     """
     Resolve the exact Chrome binary to launch and match chromedriver against.
 
-    Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan.
-    Unlike undetected-chromedriver's own lookup (a set, order not guaranteed),
-    this keeps the browser choice consistent between version detection and launch.
+    Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan,
+    then well-known per-platform install paths. Unlike undetected-chromedriver's
+    own lookup (a set, order not guaranteed), this keeps the browser choice
+    consistent between version detection and launch.
     """
     if CHROME_BINARY_PATH:
         if os.path.isfile(CHROME_BINARY_PATH):
@@ -496,6 +527,10 @@ def get_chrome_executable():
         path = shutil.which(binary)
         if path:
             return path
+    for candidate in _platform_chrome_candidates():
+        if os.path.isfile(candidate):
+            logger.info("Found Chrome binary at well-known path: %s", candidate)
+            return candidate
     return None
 
 def get_chrome_major_version(chrome_path=None):

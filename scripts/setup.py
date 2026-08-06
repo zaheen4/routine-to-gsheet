@@ -44,6 +44,37 @@ CHROME_CANDIDATES = [
     "chrome",
 ]
 
+
+def _platform_chrome_candidates():
+    """
+    Well-known Chrome/Chromium install paths, by platform.
+
+    macOS .app bundles and Windows Program Files installs are not on PATH,
+    so `shutil.which` cannot find them. Returns deduplicated candidate paths
+    (empty on Linux, where the PATH names in CHROME_CANDIDATES are the only
+    option). Mirrors routine_scrapper._platform_chrome_candidates.
+    """
+    if sys.platform == "darwin":
+        return [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    if os.name == "nt":
+        bases = [
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramW6432"),
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ]
+        paths = []
+        for base in bases:
+            if not base:
+                continue
+            paths.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+            paths.append(os.path.join(base, "Chromium", "Application", "chrome.exe"))
+        return list(dict.fromkeys(paths))
+    return []
+
 ENV_PLACEHOLDER_IDS = {"your_app_script_id", "YOUR_APP_SCRIPT_ID_GOES_HERE", ""}
 
 
@@ -144,10 +175,13 @@ def validate_env(path):
 
 
 def find_browser():
-    """Return the first installed Chrome/Chromium binary name, or None."""
+    """Return the first installed Chrome/Chromium binary path, or None."""
     for name in CHROME_CANDIDATES:
         if shutil.which(name):
             return name
+    for candidate in _platform_chrome_candidates():
+        if os.path.exists(candidate):
+            return candidate
     return None
 
 

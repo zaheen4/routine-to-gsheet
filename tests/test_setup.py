@@ -152,3 +152,29 @@ def test_find_browser_returns_path_entry(monkeypatch):
 def test_find_browser_none(monkeypatch):
     monkeypatch.setattr(s.shutil, "which", lambda name: None)
     assert s.find_browser() is None
+
+
+def test_find_browser_macos_app_bundle(monkeypatch):
+    monkeypatch.setattr(s.shutil, "which", lambda name: None)
+    fake = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    monkeypatch.setattr(s, "_platform_chrome_candidates", lambda: [fake])
+    monkeypatch.setattr(s.os.path, "exists", lambda p: p == fake)
+    assert s.find_browser() == fake
+
+
+def test_setup_platform_candidates_macos(monkeypatch):
+    monkeypatch.setattr(s.sys, "platform", "darwin")
+    candidates = s._platform_chrome_candidates()
+    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
+    assert "/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
+
+
+def test_setup_platform_candidates_windows(monkeypatch):
+    monkeypatch.setattr(s.os, "name", "nt")
+    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
+    candidates = s._platform_chrome_candidates()
+    assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
+    assert os.path.join("C:\\Users\\u\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe") in candidates
