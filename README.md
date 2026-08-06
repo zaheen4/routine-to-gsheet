@@ -2,6 +2,8 @@
 
 An automated solution for scraping class schedules from the UCAM web portal and synchronizing them with a Google Spreadsheet.
 
+**New here?** Follow the step-by-step bring-up guide in [**SETUP.md**](SETUP.md) — it covers Google Cloud setup, configuration, first run, and automation.
+
 ## Final Output Preview
 
 The following image demonstrates the final, formatted routine sheet. It features conditional formatting and chronological sorting by day and time.
@@ -40,16 +42,21 @@ project_root/
 ├── routine_scrapper.py         # Primary scraping logic for UCAM portal
 ├── gsheet_formatter.py         # Google Sheets API integration
 ├── config.py                   # Central runtime configuration
+├── SETUP.md                    # Step-by-step bring-up guide
 ├── .env.example                # Environment variable overrides template
+├── apps_script/                # Google Apps Script source
+│   └── Code.gs                 # Paste into Extensions > Apps Script
 ├── tests/                      # Unit test suite (pytest)
 ├── configs_to_edit/            # User configuration directory
-│   ├── ucam_login_credentials.json.example
-│   └── teacher_contact_details.json.example
+│   ├── ucam_login_credentials.json.example.txt
+│   └── teacher_contact_details.json.example.txt
 ├── google_cloud_keys/          # API credentials directory
-│   ├── service_account_key.json.example
-│   └── oauth_client_secret.json.example
+│   ├── service_account_key.json.example.txt
+│   └── oauth_client_secret.json.example.txt
 ├── scripts/                    # Local automation and helper scripts
 │   ├── run_routine.sh          # Portable runner script
+│   ├── setup.py                # Config scaffold + validation
+│   ├── check_setup.py          # Online preflight check
 │   ├── routine-automation.service.example
 │   └── routine-automation.timer.example
 ├── output_of_fetched_routine/  # Local cache for scraped data
@@ -84,7 +91,7 @@ python -m venv .venv; .\.venv\Scripts\activate; pip install -r requirements.txt
 ```
 
 ### 3. Browser and Runtime Configuration
-Runtime settings are centralized in `config.py` and read from environment variables (optionally via a `.env` file). Copy `.env.example` to `.env` and adjust if the defaults don't apply:
+Runtime settings are centralized in `config.py` and read from environment variables (optionally via a `.env` file). Copy `.env.example` to `.env` (or run `python scripts/setup.py` to scaffold all config files at once) and adjust if the defaults don't apply:
 ```bash
 cp .env.example .env
 ```
@@ -92,14 +99,17 @@ cp .env.example .env
 PREFERRED_BROWSER=chrome   # Options: "chrome", "firefox"
 HEADLESS=false             # Set to true to run without a visible window
 #CHROME_BINARY_PATH=/usr/bin/google-chrome-stable   # Pin a specific Chrome/Chromium binary
+SPREADSHEET_NAME=CSE-03_B_ClassRoutine   # Exact name of your Google Spreadsheet
+APP_SCRIPT_ID=your_script_id             # From the Apps Script deployment (section 6)
 LOG_LEVEL=INFO             # Options: DEBUG, INFO, WARNING, ERROR
 ```
 
 When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` to force a specific binary (useful when both Google Chrome and Chromium are installed).
 
 ### 4. Configuration
-1. **UCAM Credentials**: Rename `configs_to_edit/ucam_login_credentials.json.example` to `ucam_login_credentials.json` and provide your credentials.
-2. **Teacher Details**: Rename `configs_to_edit/teacher_contact_details.json.example` to `teacher_contact_details.json` and populate as needed.
+Run `python scripts/setup.py` to copy the template files to their real names and validate them, or copy them by hand:
+1. **UCAM Credentials**: Copy `configs_to_edit/ucam_login_credentials.json.example.txt` to `ucam_login_credentials.json` and provide your credentials.
+2. **Teacher Details**: Copy `configs_to_edit/teacher_contact_details.json.example.txt` to `teacher_contact_details.json` and populate as needed.
 
 ### 5. Google Cloud Platform Setup
 Enable the following APIs in the [Google Cloud Console](https://console.cloud.google.com/):
@@ -125,111 +135,7 @@ Update the following variables in `config.py` (or override them in your `.env`):
 
 #### Google Apps Script Deployment
 1. Open your Google Sheet and navigate to **Extensions > Apps Script**.
-2. Deploy the following code:
-
-<details>
-<summary>Click to view Apps Script Source Code</summary>
-
-```javascript
-// Google Apps Script: Code.gs
-
-const SIGNATURE = "Made by Z  :)";
-
-function triggerSortFromPython() {
-  sortBackendData(null);
-}
-
-function sortBackendData(e) {
-  if (e && e.source.getActiveSheet().getName() !== "backend") return;
-
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const backendSheet = ss.getSheetByName("backend");
-  const targetSheet = ss.getSheetByName("NewMain");
-  const targetStartCell = "B4";
-
-  if (!backendSheet || !targetSheet) {
-    console.error("Required sheets ('backend' or 'NewMain') not found.");
-    return;
-  }
-
-  const lastRow = backendSheet.getLastRow();
-  if (lastRow < 2) {
-    const startRowOutput = targetSheet.getRange(targetStartCell).getRow();
-    const startColOutput = targetSheet.getRange(targetStartCell).getColumn();
-    targetSheet.getRange(startRowOutput, startColOutput, targetSheet.getMaxRows() - startRowOutput + 1, 8).clearContent();
-    targetSheet.getRange(targetStartCell).setValue("No data found in 'backend' sheet.");
-    updateMetadata(targetSheet);
-    return;
-  }
-
-  const data = backendSheet.getRange("A2:H" + lastRow).getValues();
-  const dayOrder = { "SAT": 1, "SUN": 2, "MON": 3, "TUE": 4, "WED": 5, "THU": 6, "FRI": 7 };
-
-  const processedData = data.map(row => {
-    const day = row[3];
-    const timeSlotRaw = row[5];
-    let sortableDay = 998;
-    if (day && typeof day === 'string' && day.trim() !== '') {
-      sortableDay = dayOrder[day.trim().toUpperCase()] || 999;
-    }
-    const { formatted, sortable } = parseAndFormatTime(timeSlotRaw);
-    const newRow = [...row];
-    newRow[5] = formatted;
-    return [...newRow, sortableDay, sortable];
-  });
-
-  processedData.sort((a, b) => {
-    const dayDiff = a[a.length - 2] - b[b.length - 2];
-    return dayDiff !== 0 ? dayDiff : a[a.length - 1] - b[b.length - 1];
-  });
-
-  const startRowOutput = targetSheet.getRange(targetStartCell).getRow();
-  const startColOutput = targetSheet.getRange(targetStartCell).getColumn();
-  targetSheet.getRange(startRowOutput, startColOutput, Math.max(1, targetSheet.getLastRow() - startRowOutput + 1), 8).clearContent();
-
-  if (processedData.length > 0) {
-    targetSheet.getRange(startRowOutput, startColOutput, processedData.length, 8)
-      .setValues(processedData.map(row => row.slice(0, 8)));
-  }
-  updateMetadata(targetSheet);
-}
-
-function updateMetadata(sheet) {
-  const currentDate = Utilities.formatDate(new Date(), "GMT+6", "d MMMM, yyyy HH:mm");
-  sheet.getRange("I24").setValue("Last Updated: " + currentDate).setHorizontalAlignment("left");
-  sheet.getRange("I25").setValue(SIGNATURE).setHorizontalAlignment("right");
-}
-
-function parseAndFormatTime(timeStr) {
-  if (!timeStr || timeStr.trim() === '') return { formatted: "", sortable: 99999 };
-  try {
-    const parts = timeStr.trim().split(/\s*-\s*/);
-    const getSortable = (tStr) => {
-      const match = tStr.match(/^(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?/i);
-      if (!match) return { formatted: tStr, sortable: 99998 };
-      let hour = parseInt(match[1]);
-      const min = parseInt(match[2]);
-      const period = match[3] ? match[3].toUpperCase() : (hour >= 7 && hour <= 11 ? 'AM' : 'PM');
-      if (period === 'PM' && hour < 12) hour += 12;
-      if (period === 'AM' && hour === 12) hour = 0;
-      return { 
-        formatted: `${hour % 12 || 12}:${min.toString().padStart(2, '0')} ${period}`, 
-        sortable: hour * 60 + min 
-      };
-    };
-    const start = getSortable(parts[0]);
-    const end = parts[1] ? getSortable(parts[1]) : { formatted: "" };
-    return { 
-      formatted: end.formatted ? `${start.formatted} - ${end.formatted}` : start.formatted, 
-      sortable: start.sortable 
-    };
-  } catch (e) {
-    return { formatted: timeStr, sortable: 99999 };
-  }
-}
-```
-</details>
-
+2. Delete any stub code and paste the **entire** contents of [`apps_script/Code.gs`](apps_script/Code.gs).
 3. **Deploy** as an **API Executable**.
 4. Copy the **Script ID** into your `.env` as `APP_SCRIPT_ID` (or directly into `config.py`).
 
@@ -290,6 +196,8 @@ For reliable weekly automation on your local machine that runs even if the compu
 - [ ] Check the `backend` sheet for raw data.
 - [ ] Verify the `NewMain` sheet for sorted and formatted routine data.
 - [ ] Confirm the "Last Updated" timestamp is current.
+
+Before your first run, run the preflight check: `python scripts/check_setup.py`. It verifies the config files, that your spreadsheet opens with the service account, and that the Apps Script ID is configured.
 
 ---
 
