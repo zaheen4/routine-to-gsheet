@@ -8,14 +8,13 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-from config import SPREADSHEET_NAME, APP_SCRIPT_ID, setup_logging
+from config import SPREADSHEET_NAME, TARGET_SHEET_NAME, APP_SCRIPT_ID, setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
 logger.info("gsheet_formatter.py starting...")
 
 # [Configuration]
-TARGET_SHEET_NAME = 'backend'
 NEW_MAIN_SHEET_NAME = 'NewMain'
 FUNCTION_NAME = 'triggerSortFromPython'
 

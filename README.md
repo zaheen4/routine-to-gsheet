@@ -28,7 +28,7 @@ Ensure the following software is installed on your system:
 
 * **Python 3.10+**
 * **pip** (Python package manager)
-* **Google Chrome** (Recommended; utilized with `undetected-chromedriver` for reliability).
+* **Google Chrome** or **Chromium** (Recommended; utilized with `undetected-chromedriver` for reliability).
 * **Xvfb** (Required for headless Linux environments).
 * **Google Account** with enabled access to Google Drive and Google Cloud Platform.
 
@@ -75,12 +75,12 @@ It is recommended to use a virtual environment for dependency isolation.
 
 **Unix/macOS:**
 ```bash
-python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 ```
 
 **Windows:**
 ```powershell
-python -m venv venv; .\venv\Scripts\activate; pip install -r requirements.txt
+python -m venv .venv; .\.venv\Scripts\activate; pip install -r requirements.txt
 ```
 
 ### 3. Browser and Runtime Configuration
@@ -120,8 +120,8 @@ Enable the following APIs in the [Google Cloud Console](https://console.cloud.go
 ### 6. Script Configuration
 Update the following variables in `config.py` (or override them in your `.env`):
 * `SPREADSHEET_NAME`: The exact name of your Google Spreadsheet.
-* `TARGET_SHEET_NAME`: Set to `'backend'`.
-* `APP_SCRIPT_ID`: Obtained in the next step.
+* `TARGET_SHEET_NAME`: Name of the worksheet that raw data is written to. Defaults to `'backend'`; only override if you also update the sheet names in the Apps Script below.
+* `APP_SCRIPT_ID`: Obtained in the next step. Set it in `.env` (or directly in `config.py`).
 
 #### Google Apps Script Deployment
 1. Open your Google Sheet and navigate to **Extensions > Apps Script**.
@@ -231,7 +231,7 @@ function parseAndFormatTime(timeStr) {
 </details>
 
 3. **Deploy** as an **API Executable**.
-4. Copy the **Script ID** into `config.py` (or `.env` as `APP_SCRIPT_ID`).
+4. Copy the **Script ID** into your `.env` as `APP_SCRIPT_ID` (or directly into `config.py`).
 
 The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
 
