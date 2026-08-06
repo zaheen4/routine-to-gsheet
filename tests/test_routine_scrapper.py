@@ -100,6 +100,16 @@ def test_load_teacher_details_invalid_json(tmp_path):
     assert rs.load_teacher_details_from_file(str(path)) == {}
 
 
+def test_load_teacher_details_skips_underscore_keys(tmp_path):
+    details = {
+        "_comment": "not a teacher",
+        "SS": {"FullName": "Test Teacher", "Phone": "123", "Email": "t@x.com"},
+    }
+    path = tmp_path / "teachers.json"
+    path.write_text(json.dumps(details), encoding="utf-8")
+    assert rs.load_teacher_details_from_file(str(path)) == {"SS": details["SS"]}
+
+
 # ----------------------------- parse_attendance_dashboard_data -----------------------------
 
 def test_parse_dashboard_entries():
@@ -245,6 +255,47 @@ def test_build_final_routine_no_secondary():
     data = [_item("CSE-3201", "Operating Systems", "B1", "Sun")]
     final = rs.build_final_routine(data, "B1", None, {})
     assert len(final) == 1
+
+
+# ----------------------------- missing_teacher_initials -----------------------------
+
+def test_missing_teacher_initials_returns_unknowns():
+    data = [
+        {"ScheduleOne_TeacherInitial": "SS", "ScheduleTwo_TeacherInitial": "ZZ"},
+        {"ScheduleOne_TeacherInitial": "TA", "ScheduleTwo_TeacherInitial": ""},
+    ]
+    assert rs.missing_teacher_initials(data, {"SS": {}, "TA": {}}) == ["ZZ"]
+
+
+def test_missing_teacher_initials_empty_when_all_known():
+    data = [
+        {"ScheduleOne_TeacherInitial": "SS", "ScheduleTwo_TeacherInitial": "JTT"},
+    ]
+    assert rs.missing_teacher_initials(data, {"SS": {}, "JTT": {}}) == []
+
+
+def test_missing_teacher_initials_ignores_empty_values():
+    data = [{"ScheduleOne_TeacherInitial": "", "ScheduleTwo_TeacherInitial": None}]
+    assert rs.missing_teacher_initials(data, {}) == []
+
+
+# ----------------------------- build_final_routine warnings -----------------------------
+
+def test_build_final_routine_warns_on_missing_teacher(caplog):
+    item = _item("CSE-3201", "Operating Systems", "B1", "Sun")
+    item["ScheduleOne_TeacherInitial"] = "ZZ"
+    data = [item]
+    rs.build_final_routine(data, "B1", "B2", {"SS": {"FullName": "S"}})
+    assert any(
+        "ZZ" in r.message and "not found" in r.message
+        for r in caplog.records if r.levelname == "WARNING"
+    )
+
+
+def test_build_final_routine_no_warning_when_all_known(caplog):
+    data = [_item("CSE-3201", "Operating Systems", "B1", "Sun")]
+    rs.build_final_routine(data, "B1", "B2", {"SS": {"FullName": "S"}})
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
 # ----------------------------- Chrome binary resolution -----------------------------
