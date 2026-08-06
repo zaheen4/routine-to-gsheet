@@ -89,6 +89,10 @@ def load_teacher_details_from_file(file_path):
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             teacher_details = json.load(f)
+        if isinstance(teacher_details, dict):
+            teacher_details = {
+                k: v for k, v in teacher_details.items() if not k.startswith("_")
+            }
         logger.info("Loaded %d teacher entries.", len(teacher_details))
         return teacher_details
     except FileNotFoundError:
@@ -232,6 +236,23 @@ def _schedule_entry(item, prefix, teacher_details):
     })
     return entry
 
+def missing_teacher_initials(all_collected_data, teacher_details):
+    """
+    Collects teacher initials present in the scraped data but missing from
+    the teacher details file.
+
+    Returns a sorted set of unknown initials (empty when all are known).
+    """
+    known = set(teacher_details.keys())
+    scraped = set()
+    for item in all_collected_data:
+        for prefix in ("ScheduleOne", "ScheduleTwo"):
+            initial = item.get(f"{prefix}_TeacherInitial")
+            if initial:
+                scraped.add(initial)
+    return sorted(initial for initial in scraped if initial not in known)
+
+
 def build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details):
     """
     Merges per-section scraped data into the final deduplicated routine.
@@ -240,6 +261,13 @@ def build_final_routine(all_collected_data, primary_section, secondary_section, 
     only lab courses (title contains "lab"). Entries are deduplicated by
     (CourseCode, Day, TimeSlot, Section).
     """
+    missing = missing_teacher_initials(all_collected_data, teacher_details)
+    if missing:
+        logger.warning(
+            "Teacher initials not found in teacher_contact_details.json: %s",
+            ", ".join(missing),
+        )
+
     final_routine = []
 
     for item in all_collected_data:
