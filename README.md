@@ -6,8 +6,6 @@ An automated solution for scraping class schedules from the UCAM web portal and 
 
 ## Final Output Preview
 
-The following image demonstrates the final, formatted routine sheet. It features conditional formatting and chronological sorting by day and time.
-
 ![Class Routine Demo](assets/screenshot_of_output.png)
 
 [**Demo Output Spreadsheet**](https://docs.google.com/spreadsheets/d/1mE36dYY9u4rgwbJl9rq8LibBlB-VLd_K3Jli_Db3bxA/edit?usp=sharing)
@@ -18,21 +16,17 @@ The following image demonstrates the final, formatted routine sheet. It features
 * **Data Enrichment**: Integrates teacher contact details from local configuration files.
 * **Flexible Browser Support**: Compatible with both Firefox and Google Chrome.
 * **Sheets Integration**: Uploads raw data and triggers Google Apps Script for post-processing.
-* **Advanced Processing**: 
-    * Normalizes time formats to 12-hour display.
-    * Chronological sorting by day and time.
-    * Generates a "Last Updated" timestamp.
+* **Advanced Processing**: Normalizes time formats to 12-hour display, sorts chronologically, and generates a "Last Updated" timestamp.
 
 ---
 
 ## Prerequisites
-Ensure the following software is installed on your system:
 
 * **Python 3.10+**
 * **pip** (Python package manager)
-* **Google Chrome** or **Chromium** (Recommended; utilized with `undetected-chromedriver` for reliability).
-* **Xvfb** (Required for headless Linux environments).
-* **Google Account** with enabled access to Google Drive and Google Cloud Platform.
+* **Google Chrome** or **Chromium**
+* **Xvfb** (Required for headless Linux environments)
+* **Google Account** with enabled access to Google Drive and Google Cloud Platform
 
 ---
 
@@ -67,18 +61,11 @@ project_root/
 
 ---
 
-## Installation and Setup
+## Setup
 
-### 1. Project Initialization
-Clone the repository and navigate to the project root:
+The full walkthrough lives in [**SETUP.md**](SETUP.md): Google Cloud setup and Apps Script deployment (Phase A), local configuration (Phase B), first run (Phase C), and automation (Phase D). A condensed quickstart follows.
 
-```bash
-git clone https://github.com/zaheen4/routine-to-gsheet.git
-cd routine-to-gsheet
-```
-
-### 2. Dependency Management
-It is recommended to use a virtual environment for dependency isolation.
+Create a virtual environment and install dependencies:
 
 **Unix/macOS:**
 ```bash
@@ -90,46 +77,32 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 python -m venv .venv; .\.venv\Scripts\activate; pip install -r requirements.txt
 ```
 
-### 3. Browser and Runtime Configuration
-Runtime settings are centralized in `config.py` and read from environment variables (optionally via a `.env` file). Copy `.env.example` to `.env` (or run `python scripts/setup.py` to scaffold all config files at once) and adjust if the defaults don't apply:
+All commands below use `.venv/bin/python` (Unix/macOS) or `.\venv\Scripts\python.exe` (Windows); the venv need not be activated for them to work.
+
+Scaffold the config files from templates:
+
 ```bash
-cp .env.example .env
-```
-```env
-PREFERRED_BROWSER=chrome            # Options: "chrome", "firefox"
-HEADLESS=false                      # Set to true to run without a visible window
-#CHROME_BINARY_PATH=/usr/bin/google-chrome-stable   # Pin a specific Chrome/Chromium binary
-SPREADSHEET_NAME=CSE-03_B_ClassRoutine   # Exact name of your Google Spreadsheet
-TARGET_SHEET_NAME=backend           # Raw-data worksheet; keep in sync with apps_script/Code.gs
-APP_SCRIPT_ID=YOUR_APP_SCRIPT_ID_GOES_HERE   # From the Apps Script deployment (SETUP.md Phase A6)
-LOG_LEVEL=INFO                      # Options: DEBUG, INFO, WARNING, ERROR
+.venv/bin/python scripts/setup.py
 ```
 
-When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` to force a specific binary (useful when both Google Chrome and Chromium are installed).
-
-### 4. Configuration
-Run `python scripts/setup.py` to copy the template files to their real names and validate them, or copy them by hand:
-1. **UCAM Credentials**: Copy `configs_to_edit/ucam_login_credentials.json.example.txt` to `ucam_login_credentials.json` and provide your credentials.
-2. **Teacher Details**: Copy `configs_to_edit/teacher_contact_details.json.example.txt` to `teacher_contact_details.json` and populate as needed.
-
-### 5. Google Cloud Setup and Apps Script
-The complete Google Cloud walkthrough lives in **SETUP.md Phase A**: enabling the Sheets/Apps Script/Drive APIs, creating and sharing a service account, configuring the OAuth consent screen (and publishing to Production so tokens don't expire weekly), and deploying `apps_script/Code.gs` as an API Executable. Put the deployment's Script ID in `.env` as `APP_SCRIPT_ID`.
+Then edit the real files it creates — your UCAM login (`configs_to_edit/ucam_login_credentials.json`) and your `.env`, where you must set `SPREADSHEET_NAME` (exact name of your Google Spreadsheet) and `APP_SCRIPT_ID` (from the Apps Script deployment). See **SETUP.md Phase B4/A6** for what goes in each.
 
 The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
+
+When using Chrome, the scraper auto-detects the browser binary (preferring `google-chrome-stable`) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` in `.env` to force a specific binary (useful when both Google Chrome and Chromium are installed).
 
 ---
 
 ## Usage
 
-### Local Execution
 1. **Scrape Routine**:
    ```bash
-   python3 routine_scrapper.py
+   .venv/bin/python routine_scrapper.py
    ```
-   *Note: On headless Linux, run via `xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 routine_scrapper.py`.*
+   *Note: On headless Linux, run via `xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" .venv/bin/python routine_scrapper.py`.*
 2. **Update Sheets**:
    ```bash
-   python3 gsheet_formatter.py
+   .venv/bin/python gsheet_formatter.py
    ```
    *Note: On the first execution, an OAuth consent window will open in your browser to generate `token.pickle`.*
 
@@ -137,7 +110,7 @@ The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don
 
 ## Testing
 
-Run the unit test suite (covers dashboard parsing, merge logic, browser workflow steps, and sheet-building helpers):
+Run the unit test suite (covers dashboard parsing, merge logic, browser workflow steps, sheet-building helpers, and setup validation):
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
@@ -152,11 +125,14 @@ Weekly automation via a systemd user timer is documented in **SETUP.md Phase D**
 ---
 
 ## Verification
-- [ ] Check the `backend` sheet for raw data.
-- [ ] Verify the `NewMain` sheet for sorted and formatted routine data.
-- [ ] Confirm the "Last Updated" timestamp is current.
 
-Before your first run, run the preflight check: `python scripts/check_setup.py`. It verifies the config files, that your spreadsheet opens with the service account, and that the Apps Script ID is configured.
+Before your first run, run the preflight check:
+
+```bash
+.venv/bin/python scripts/check_setup.py
+```
+
+It verifies the config files, that your spreadsheet opens with the service account, and that the Apps Script ID is configured.
 
 ---
 
