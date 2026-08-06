@@ -233,6 +233,8 @@ function parseAndFormatTime(timeStr) {
 3. **Deploy** as an **API Executable**.
 4. Copy the **Script ID** into `config.py` (or `.env` as `APP_SCRIPT_ID`).
 
+The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
+
 ---
 
 ## Usage

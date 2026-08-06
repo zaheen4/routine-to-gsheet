@@ -16,6 +16,7 @@ logger.info("gsheet_formatter.py starting...")
 
 # [Configuration]
 TARGET_SHEET_NAME = 'backend'
+NEW_MAIN_SHEET_NAME = 'NewMain'
 FUNCTION_NAME = 'triggerSortFromPython'
 
 # 8-column output headers
@@ -97,7 +98,7 @@ def authenticate_gsheet(service_account_json_path):
         logger.error("Authentication failed: %s", e)
         return None
 
-def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
+def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_headers=False):
     """
     Retrieves a worksheet by name, creating it if it does not exist.
     
@@ -106,6 +107,8 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
         sheet_name (str): Name of the worksheet to retrieve or create.
         rows (str): Initial row count for new worksheet.
         cols (str): Initial column count for new worksheet.
+        seed_headers (bool): If True, write SHEET_HEADERS to B3:I3 when a new
+            worksheet is created (matches the Apps Script data block at B4).
         
     Returns:
         gspread.Worksheet: The requested worksheet object or None if retrieval fails.
@@ -117,6 +120,10 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20):
         logger.info("Worksheet '%s' not found. Initializing new worksheet...", sheet_name)
         worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=rows, cols=cols)
         logger.info("Created worksheet: '%s'", sheet_name)
+        if seed_headers:
+            worksheet.update(values=[SHEET_HEADERS], range_name='B3')
+            worksheet.format("B3:I3", {'textFormat': {'bold': True}})
+            logger.info("Seeded headers to 'B3:I3' on '%s'.", sheet_name)
     except Exception as e:
         logger.error("Error accessing worksheet '%s': %s", sheet_name, e)
         return None
@@ -297,6 +304,18 @@ def main():
                 logger.error("Synchronization failed.")
         else:
             logger.error("Target worksheet unreachable. Exiting.")
+
+        # 3b. Ensure the 'NewMain' worksheet exists for Apps Script post-processing
+        new_main_ws = get_or_create_worksheet(
+            spreadsheet,
+            NEW_MAIN_SHEET_NAME,
+            rows=max(30, len(routine_data) + 5),
+            cols=10,
+            seed_headers=True,
+        )
+        if not new_main_ws:
+            logger.error("NewMain worksheet unreachable. Exiting.")
+            return
 
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error("Spreadsheet '%s' not found.", SPREADSHEET_NAME)
