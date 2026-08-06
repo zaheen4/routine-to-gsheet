@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- macOS LaunchAgent counterpart to the Linux systemd timer.
+         Runs the pipeline every Saturday at 19:00 while the user is logged in. -->
+    <key>Label</key>
+    <string>com.user.routine-automation</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/your/project/scripts/run_routine.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/your/project</string>
+
+    <!-- Weekday 6 = Saturday, at 19:00. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>6</integer>
+        <key>Hour</key>
+        <integer>19</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
