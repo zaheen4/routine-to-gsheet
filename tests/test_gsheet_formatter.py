@@ -209,6 +209,13 @@ def test_headless_environment_false_on_windows(monkeypatch):
     assert gf._headless_environment() is False
 
 
+def test_headless_environment_false_on_macos(monkeypatch):
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(gf.sys, "platform", "darwin")
+    assert gf._headless_environment() is False
+
+
 # ----------------------------- call_apps_script_function fail-fast -----------------------------
 
 def test_call_apps_script_function_fails_fast_headless(monkeypatch, tmp_path):
