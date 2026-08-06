@@ -2,6 +2,7 @@ import gspread
 import json
 import os
 import pickle
+import sys
 import traceback
 import logging
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -220,8 +221,12 @@ def _headless_environment():
     under the systemd timer there is no DISPLAY/WAYLAND_DISPLAY and no
     browser can open the OAuth consent page, so run_local_server() would
     wait until the service timeout.
+
+    Windows and macOS always have a GUI session available to the user
+    (macOS uses WindowServer, not X11, so DISPLAY is never set there) -
+    only Linux/BSD rely on the DISPLAY/WAYLAND_DISPLAY env vars.
     """
-    if os.name == "nt":
+    if os.name == "nt" or sys.platform == "darwin":
         return False
     return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
