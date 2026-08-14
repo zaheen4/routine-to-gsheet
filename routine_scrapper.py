@@ -586,7 +586,11 @@ def main():
                 # Enhanced stealth flags
                 options.add_argument("--disable-blink-features=AutomationControlled")
                 options.add_argument("--profile-directory=Default")
-                
+
+                if not HEADLESS and sys.platform.startswith("linux"):
+                    options.add_argument("--ozone-platform=x11")
+                    options.add_argument("--ozone-platform-hint=x11")
+
                 chrome_path = get_chrome_executable()
                 if not chrome_path:
                     logger.error("No Chrome binary found for %s. Install Chrome/Chromium or set CHROME_BINARY_PATH.", profile['id'])
