@@ -1,11 +1,16 @@
 [Unit]
 Description=UCAM Routine Scraper and GSheet Formatter
+# Give up after 3 failed starts within an hour so a persistent
+# Cloudflare block or portal outage does not trigger a retry loop.
+StartLimitIntervalSec=3600
+StartLimitBurst=3
 
 [Service]
 Type=simple
 # Replace with the absolute path to your run_routine.sh script
 ExecStart=/path/to/your/project/scripts/run_routine.sh
 Restart=on-failure
+RestartSec=300
 
 [Install]
 WantedBy=default.target
