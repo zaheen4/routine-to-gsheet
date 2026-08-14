@@ -1,27 +1,17 @@
 import json
 import sys
 import time
-import subprocess
+import asyncio
 import traceback
 import logging
-import undetected_chromedriver as uc
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+import nodriver as nd
 from bs4 import BeautifulSoup
 import os
 import csv
 import re
 import shutil
 
-from config import PREFERRED_BROWSER, HEADLESS, CHROME_BINARY_PATH, setup_logging
-
-# Browser-specific imports
-from selenium.webdriver.firefox.service import Service as FirefoxService
-from selenium.webdriver.firefox.options import Options as FirefoxOptions
-from webdriver_manager.firefox import GeckoDriverManager
+from config import HEADLESS, CHROME_BINARY_PATH, setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -306,6 +296,7 @@ LOGIN_FIELD_WAIT_S = 10
 LOGIN_SUCCESS_WAIT_S = 45
 SEMESTER_WAIT_S = 20
 COURSE_TABLE_WAIT_S = 45
+EVALUATE_POLL_S = 0.5
 
 LOGIN_USERNAME_ID = "logMain_UserName"
 LOGIN_PASSWORD_ID = "logMain_Password"
@@ -318,132 +309,305 @@ COURSE_TABLE_ID = "ctl00_MainContainer_gvCourseList"
 CLOUDFLARE_TITLE_MARKERS = ("just a moment", "cloudflare", "attention required")
 
 
+class ScrapeTimeoutError(TimeoutError):
+    """Raised when a required page element does not appear within its wait window."""
+
+
 def _is_cloudflare_blocked(page_title):
     lowered = (page_title or "").lower()
     return any(marker in lowered for marker in CLOUDFLARE_TITLE_MARKERS)
 
 
-def masking_visit(driver, url=MASKING_URL, settle_s=MASKING_SETTLE_S):
+# --- nodriver evaluation helpers -------------------------------------------
+
+def _semester_options_js():
+    return (
+        "(() => {"
+        f" const sel = document.getElementById('{SEMESTER_DROPDOWN_ID}');"
+        " if (!sel) return null;"
+        " return JSON.stringify(Array.prototype.map.call(sel.options,"
+        "   function (o) { return {text: o.text, value: o.value}; }));"
+        "})()"
+    )
+
+
+def _select2_selection_js():
+    """
+    Opens the select2 dropdown. select2 4.x binds the single-selection toggle on
+    ``mousedown`` (checking ``e.which === 1``), so a plain ``element.click()``
+    never opens it. The synthesized event must carry ``button``/``buttons`` so
+    ``e.which`` resolves to 1.
+    """
+    return (
+        "(() => {"
+        f" const sel = document.getElementById('{SEMESTER_DROPDOWN_ID}');"
+        " const container = sel ? sel.closest('.select2-container') : null;"
+        " let target = null;"
+        " if (container) {"
+        "   target = container.querySelector('.select2-selection') || container;"
+        " } else {"
+        "   target = document.querySelector('.select2-container .select2-selection')"
+        "         || document.querySelector('.select2-container');"
+        " }"
+        " if (!target) return false;"
+        " target.dispatchEvent(new MouseEvent('mousedown', {"
+        "   bubbles: true, cancelable: true, view: window, button: 0, buttons: 1,"
+        " }));"
+        " return true;"
+        "})()"
+    )
+
+
+def _select2_option_js(option_text):
+    """
+    Clicks the select2 result whose text matches ``option_text``. Result
+    selection in select2 4.x is bound on ``mouseup`` over the option ``li``
+    (delegated on ``.select2-results``), and the results are ``li`` elements
+    under ``div.select2-results > ul.select2-results__options`` - hence the
+    version-agnostic ``.select2-results li`` query plus a synthetic ``mouseup``.
+    """
+    target = json.dumps(option_text)
+    return (
+        "(() => {"
+        " const items = Array.prototype.slice.call("
+        "   document.querySelectorAll('.select2-results li'));"
+        " for (const li of items) {"
+        f"   if (li.textContent.trim() === {target}) {{"
+        "     li.dispatchEvent(new MouseEvent('mouseup', {"
+        "       bubbles: true, cancelable: true, view: window,"
+        "       button: 0, buttons: 0,"
+        "     }));"
+        "     li.dispatchEvent(new MouseEvent('click', {"
+        "       bubbles: true, cancelable: true, view: window,"
+        "       button: 0, buttons: 0,"
+        "     }));"
+        "     return true;"
+        "   }"
+        " }"
+        " return false;"
+        "})()"
+    )
+
+
+def _dashboard_html_js():
+    return (
+        "(() => {"
+        f" const panel = document.getElementById('{UPDATE_PANEL_ID}');"
+        " if (!panel) return null;"
+        " return panel.innerHTML;"
+        "})()"
+    )
+
+
+async def _evaluate_until(tab, expression, timeout, interval=EVALUATE_POLL_S, predicate=None):
+    """
+    Polls ``tab.evaluate(expression)`` until ``predicate`` is satisfied or the
+    timeout elapses. Returns the matching result, or None on timeout. JS errors
+    (which nodriver surfaces as a value rather than an exception) simply never
+    satisfy the predicate.
+    """
+    if predicate is None:
+        predicate = lambda value: value is not None
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            result = await tab.evaluate(expression)
+        except Exception:
+            result = None
+        if predicate(result):
+            return result
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(interval)
+
+
+async def _get_title(tab):
+    """Returns the current page title, or '' when it cannot be read."""
+    try:
+        result = await tab.evaluate("document.title")
+    except Exception:
+        result = None
+    return str(result) if isinstance(result, str) else ""
+
+
+async def _read_semester_options(tab, timeout):
+    """
+    Returns the semester <option> list as [{text, value}, ...], or None when the
+    dropdown never appears within ``timeout``.
+    """
+    result = await _evaluate_until(
+        tab, _semester_options_js(), timeout, predicate=lambda value: isinstance(value, str)
+    )
+    if result is None:
+        return None
+    try:
+        return json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+async def _click_select2_selection(tab, timeout):
+    """Opens the select2 dropdown; returns True once the container was clicked."""
+    result = await _evaluate_until(
+        tab, _select2_selection_js(), timeout, predicate=lambda value: value is True
+    )
+    return result is True
+
+
+async def _click_select2_option(tab, option_text, timeout):
+    """Clicks the select2 result matching ``option_text``; returns True on success."""
+    result = await _evaluate_until(
+        tab, _select2_option_js(option_text), timeout, predicate=lambda value: value is True
+    )
+    return result is True
+
+
+async def _read_dashboard_html(tab):
+    """Returns the update panel's innerHTML, or None when the panel is absent."""
+    try:
+        result = await tab.evaluate(_dashboard_html_js())
+    except Exception:
+        result = None
+    return result if isinstance(result, str) else None
+
+
+async def _safe_get_content(tab):
+    """Best-effort page HTML for debug logs; never raises."""
+    try:
+        content = await tab.get_content()
+        return str(content) if content else ""
+    except Exception:
+        return ""
+
+
+# --- browser session --------------------------------------------------------
+
+def _session_tab(browser):
+    """The browser's single session tab (what ``get`` navigates)."""
+    main_tab = getattr(browser, "main_tab", None)
+    return main_tab if main_tab is not None else browser
+
+
+async def masking_visit(tab, url=MASKING_URL, settle_s=MASKING_SETTLE_S):
     """
     Visits a neutral site first to establish browsing context before the portal.
     """
     try:
         logger.info("Masking entry: Establishing context via Google...")
-        driver.get(url)
-        time.sleep(settle_s)
+        await tab.get(url)
+        await asyncio.sleep(settle_s)
     except Exception:
         logger.exception("Masking visit failed; continuing anyway.")
 
 
-def bypass_cloudflare_and_wait_for_login(driver, login_url, max_attempts=PORTAL_ACCESS_ATTEMPTS):
+async def bypass_cloudflare_and_wait_for_login(tab, login_url, max_attempts=PORTAL_ACCESS_ATTEMPTS):
     """
     Opens the login page, retrying until Cloudflare lets us through and the
-    UCAM login fields render. Raises TimeoutException if blocked for good.
+    UCAM login fields render. Raises ScrapeTimeoutError if blocked for good.
     """
     for attempt in range(1, max_attempts + 1):
         logger.info("Portal access attempt %d to: %s", attempt, login_url)
-        driver.get(login_url)
+        await tab.get(login_url)
 
-        time.sleep(PORTAL_GET_SETTLE_S)
-        page_title = driver.title
+        await asyncio.sleep(PORTAL_GET_SETTLE_S)
+        page_title = await _get_title(tab)
         logger.info("Current Page Title: '%s'", page_title)
 
         if _is_cloudflare_blocked(page_title):
             logger.info("Cloudflare block persisting. Refreshing session (Attempt %d)...", attempt)
-            time.sleep(CLOUDFLARE_COOLDOWN_S)
+            await asyncio.sleep(CLOUDFLARE_COOLDOWN_S)
             continue
 
-        try:
-            WebDriverWait(driver, LOGIN_WAIT_S).until(
-                EC.presence_of_element_located((By.ID, LOGIN_USERNAME_ID))
-            )
+        login_field = await tab.select(f"#{LOGIN_USERNAME_ID}", timeout=LOGIN_WAIT_S)
+        if login_field is not None:
             logger.info("UCAM Login fields detected. Challenge likely bypassed.")
             return
-        except TimeoutException:
-            if attempt == max_attempts:
-                logger.error("Critical: Failed to bypass Cloudflare after maximum retries.")
-                logger.error("Page Snippet: %s", driver.page_source[:500])
-                raise TimeoutException("Cloudflare challenge block.") from None
-            logger.info("Retrying portal access...")
+
+        if attempt == max_attempts:
+            logger.error("Critical: Failed to bypass Cloudflare after maximum retries.")
+            logger.error("Page Snippet: %s", (await _safe_get_content(tab))[:500])
+            raise ScrapeTimeoutError("Cloudflare challenge block.")
+        logger.info("Retrying portal access...")
+
+    raise ScrapeTimeoutError("Cloudflare challenge block.")
 
 
-def authenticate(user_creds, driver):
+async def authenticate(user_creds, tab):
     """
     Fills the UCAM login form and waits for the post-login element to appear.
     """
     logger.info("Authenticating with student credentials...")
-    user_field = WebDriverWait(driver, LOGIN_WAIT_S).until(
-        EC.element_to_be_clickable((By.ID, LOGIN_USERNAME_ID))
-    )
-    pass_field = WebDriverWait(driver, LOGIN_FIELD_WAIT_S).until(
-        EC.element_to_be_clickable((By.ID, LOGIN_PASSWORD_ID))
-    )
-    login_btn = WebDriverWait(driver, LOGIN_FIELD_WAIT_S).until(
-        EC.element_to_be_clickable((By.ID, LOGIN_BUTTON_ID))
-    )
+    user_field = await tab.select(f"#{LOGIN_USERNAME_ID}", timeout=LOGIN_WAIT_S)
+    if user_field is None:
+        raise ScrapeTimeoutError(f"Login username field not found within {LOGIN_WAIT_S}s.")
+    pass_field = await tab.select(f"#{LOGIN_PASSWORD_ID}", timeout=LOGIN_FIELD_WAIT_S)
+    if pass_field is None:
+        raise ScrapeTimeoutError(f"Login password field not found within {LOGIN_FIELD_WAIT_S}s.")
+    login_btn = await tab.select(f"#{LOGIN_BUTTON_ID}", timeout=LOGIN_FIELD_WAIT_S)
+    if login_btn is None:
+        raise ScrapeTimeoutError(f"Login button not found within {LOGIN_FIELD_WAIT_S}s.")
 
-    user_field.send_keys(user_creds['username'])
-    pass_field.send_keys(user_creds['password'])
-    login_btn.click()
+    await user_field.send_keys(user_creds['username'])
+    await pass_field.send_keys(user_creds['password'])
+    await login_btn.click()
 
-    WebDriverWait(driver, LOGIN_SUCCESS_WAIT_S).until(
-        EC.presence_of_element_located((By.ID, LOGIN_SUCCESS_ID))
-    )
+    success = await tab.select(f"#{LOGIN_SUCCESS_ID}", timeout=LOGIN_SUCCESS_WAIT_S)
+    if success is None:
+        raise ScrapeTimeoutError(
+            f"Login success indicator not found within {LOGIN_SUCCESS_WAIT_S}s."
+        )
     logger.info("User %s authenticated successfully.", user_creds['id'])
 
 
-def select_semester(driver, attendance_dashboard_url, section_label):
+async def select_semester(tab, attendance_dashboard_url, section_label):
     """
     Navigates to the dashboard and selects the first non-placeholder semester
     through the select2 control. Returns the chosen semester label.
     """
-    driver.get(attendance_dashboard_url)
-    WebDriverWait(driver, COURSE_TABLE_WAIT_S).until(
-        EC.presence_of_element_located((By.ID, SEMESTER_DROPDOWN_ID))
-    )
+    await tab.get(attendance_dashboard_url)
 
-    original_select = WebDriverWait(driver, SEMESTER_WAIT_S).until(
-        EC.presence_of_element_located((By.ID, SEMESTER_DROPDOWN_ID))
-    )
-    options = original_select.find_elements(By.TAG_NAME, "option")
+    options = await _read_semester_options(tab, timeout=COURSE_TABLE_WAIT_S)
+    if options is None:
+        raise ScrapeTimeoutError(
+            f"Semester dropdown #{SEMESTER_DROPDOWN_ID} not found for section {section_label}."
+        )
     target_semester = next(
-        (opt.text for opt in options if opt.get_attribute("value") != "0"),
+        (opt["text"] for opt in options if opt["value"] != "0"),
         None,
     )
 
     if not target_semester:
         raise ValueError(f"No valid semester options found for section {section_label}.")
 
-    s2_container = (
-        f"//select[@id='{SEMESTER_DROPDOWN_ID}']/"
-        f"following-sibling::span[contains(@class,'select2-container')]"
-    )
-    WebDriverWait(driver, SEMESTER_WAIT_S).until(
-        EC.element_to_be_clickable((By.XPATH, s2_container))
-    ).click()
+    if not await _click_select2_selection(tab, timeout=SEMESTER_WAIT_S):
+        raise ScrapeTimeoutError(
+            f"Select2 dropdown could not be opened for section {section_label}."
+        )
 
-    s2_option = f"//span[contains(@class, 'select2-results')]//li[text()=\"{target_semester}\"]"
-    WebDriverWait(driver, SEMESTER_WAIT_S).until(
-        EC.element_to_be_clickable((By.XPATH, s2_option))
-    ).click()
+    if not await _click_select2_option(tab, target_semester, timeout=SEMESTER_WAIT_S):
+        raise ScrapeTimeoutError(
+            f"Select2 option '{target_semester}' not found for section {section_label}."
+        )
 
     logger.info("Dashboard synchronized for semester: %s.", target_semester)
-    time.sleep(SEMESTER_SELECT_SETTLE_S)
+    await asyncio.sleep(SEMESTER_SELECT_SETTLE_S)
     return target_semester
 
 
-def extract_dashboard(driver, section_label):
+async def extract_dashboard(tab, section_label):
     """
     Reads the course list table HTML from the dashboard panel and persists the
     parsed entries to per-section CSV/JSON files.
     """
-    WebDriverWait(driver, COURSE_TABLE_WAIT_S).until(
-        EC.presence_of_element_located(
-            (By.XPATH, f"//div[@id='{UPDATE_PANEL_ID}']//table[@id='{COURSE_TABLE_ID}']")
-        )
+    table = await tab.select(
+        f"#{UPDATE_PANEL_ID} #{COURSE_TABLE_ID}", timeout=COURSE_TABLE_WAIT_S
     )
+    if table is None:
+        raise ScrapeTimeoutError(
+            f"Course table not found within {COURSE_TABLE_WAIT_S}s for section {section_label}."
+        )
 
-    dashboard_html = driver.find_element(By.ID, UPDATE_PANEL_ID).get_attribute('innerHTML')
+    dashboard_html = await _read_dashboard_html(tab)
     user_dashboard_data = []
 
     if dashboard_html:
@@ -459,24 +623,24 @@ def extract_dashboard(driver, section_label):
     return user_dashboard_data
 
 
-def scrape_dashboard_for_user(driver, user_creds, common_urls):
+async def scrape_dashboard_for_user(tab, user_creds, common_urls):
     """
     Executes the scraping workflow for a specific user profile.
     """
     section_label = user_creds['section_label']
     logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
 
-    masking_visit(driver)
+    await masking_visit(tab)
 
     try:
-        bypass_cloudflare_and_wait_for_login(driver, common_urls['login_url'])
-        authenticate(user_creds, driver)
+        await bypass_cloudflare_and_wait_for_login(tab, common_urls['login_url'])
+        await authenticate(user_creds, tab)
     except Exception as e:
-        logger.error("Authentication Failure: %s | URL: %s", type(e).__name__, driver.current_url)
+        logger.error("Authentication Failure: %s", type(e).__name__)
         raise
 
-    select_semester(driver, common_urls['attendance_dashboard_url'], section_label)
-    return extract_dashboard(driver, section_label)
+    await select_semester(tab, common_urls['attendance_dashboard_url'], section_label)
+    return await extract_dashboard(tab, section_label)
 
 CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
 
@@ -511,12 +675,12 @@ def _platform_chrome_candidates():
 
 def get_chrome_executable():
     """
-    Resolve the exact Chrome binary to launch and match chromedriver against.
+    Resolve the exact Chrome binary to launch.
 
     Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan,
-    then well-known per-platform install paths. Unlike undetected-chromedriver's
-    own lookup (a set, order not guaranteed), this keeps the browser choice
-    consistent between version detection and launch.
+    then well-known per-platform install paths. Passed to nodriver as
+    browser_executable_path so the launched browser always matches what was
+    detected (nodriver has no chromedriver to version-match).
     """
     if CHROME_BINARY_PATH:
         if os.path.isfile(CHROME_BINARY_PATH):
@@ -533,35 +697,55 @@ def get_chrome_executable():
             return candidate
     return None
 
-def get_chrome_major_version(chrome_path=None):
+
+async def launch_browser():
     """
-    Attempts to retrieve the major version of the Chrome binary to be launched.
+    Starts a fresh Chrome session via nodriver (CDP directly - no chromedriver).
+
+    On headless Linux, HEADLESS should be False so Chrome renders on the Xvfb
+    virtual display rather than being challenged by Cloudflare's headless
+    detection; scripts/run_routine.sh already wraps the scraper in xvfb-run.
     """
-    binary = chrome_path or get_chrome_executable()
-    if not binary:
-        logger.error("No Chrome binary found on this system.")
-        return None
-    try:
-        output = subprocess.check_output([binary, "--version"], stderr=subprocess.STDOUT).decode("utf-8")
-        version_match = re.search(r"(\d+)\.\d+\.\d+\.\d+", output)
-        if version_match:
-            major_version = int(version_match.group(1))
-            logger.info("System Chrome Version: %d (via '%s')", major_version, binary)
-            return major_version
-    except Exception as e:
-        logger.error("Failed to detect Chrome version from %s: %s", binary, e)
-    return None
+    chrome_path = get_chrome_executable()
+    if not chrome_path:
+        logger.error(
+            "No Chrome binary found on this system. Install Chrome/Chromium or "
+            "set CHROME_BINARY_PATH."
+        )
+        raise RuntimeError("No Chrome binary found on this system.")
+
+    browser_args = [
+        "--window-size=1920,1080",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--profile-directory=Default",
+    ]
+    if not HEADLESS and sys.platform.startswith("linux"):
+        browser_args.append("--ozone-platform=x11")
+        browser_args.append("--ozone-platform-hint=x11")
+
+    logger.info("Launching Chrome: %s (headless=%s)", chrome_path, HEADLESS)
+    return await nd.start(
+        headless=HEADLESS,
+        browser_executable_path=chrome_path,
+        browser_args=browser_args,
+        sandbox=False,
+    )
 
 
 # [Main Workflow]
 
-def main():
+async def main():
     logger.info("Executing scraper workflow...")
     
     credentials = load_credentials(CREDENTIALS_FILE)
     if not credentials:
-        logger.error("Termination: Missing configuration.")
-        return
+        logger.error(
+            "Termination: %s is missing or invalid (needs 'users', 'login_url' and "
+            "'attendance_dashboard_url'). See SETUP.md Phase A4.",
+            CREDENTIALS_FILE,
+        )
+        sys.exit(1)
 
     teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
     all_collected_data = []
@@ -572,61 +756,33 @@ def main():
     }
 
     for profile in credentials["users"]:
-        driver = None 
+        browser = None
+        tab = None
         try:
             logger.info("--- Initializing Session: %s ---", profile['id'])
-
-            if PREFERRED_BROWSER.lower() == "chrome":
-                options = uc.ChromeOptions()
-                options.add_argument("--window-size=1920,1080")
-                options.add_argument("--disable-gpu")
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
-                
-                # Enhanced stealth flags
-                options.add_argument("--disable-blink-features=AutomationControlled")
-                options.add_argument("--profile-directory=Default")
-
-                if not HEADLESS and sys.platform.startswith("linux"):
-                    options.add_argument("--ozone-platform=x11")
-                    options.add_argument("--ozone-platform-hint=x11")
-
-                chrome_path = get_chrome_executable()
-                if not chrome_path:
-                    logger.error("No Chrome binary found for %s. Install Chrome/Chromium or set CHROME_BINARY_PATH.", profile['id'])
-                    continue
-                major_v = get_chrome_major_version(chrome_path)
-                driver = uc.Chrome(options=options, version_main=major_v,
-                                   browser_executable_path=chrome_path, headless=HEADLESS)
-
-            elif PREFERRED_BROWSER.lower() == "firefox":
-                options = FirefoxOptions()
-                if HEADLESS:
-                    options.headless = True
-                service = FirefoxService(GeckoDriverManager().install())
-                driver = webdriver.Firefox(service=service, options=options)
-
-            if not driver:
-                logger.error("Driver initialization failure for %s.", profile['id'])
-                continue
-
-            driver.implicitly_wait(15)
-            user_data = scrape_dashboard_for_user(driver, profile, common_urls)
+            browser = await launch_browser()
+            tab = _session_tab(browser)
+            user_data = await scrape_dashboard_for_user(tab, profile, common_urls)
             all_collected_data.extend(user_data)
 
         except Exception as e:
             logger.error("Workflow Exception for %s: %s", profile['id'], e)
-            if driver:
+            if tab is not None:
                 try:
                     os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
                     log_path = os.path.join(TMP_OUTPUT_DIR, f"error_log_{profile['id']}.html")
+                    content = await _safe_get_content(tab)
                     with open(log_path, "w", encoding="utf-8") as f:
-                        f.write(driver.page_source)
+                        f.write(content)
                     logger.info("Debug log saved: %s", log_path)
-                except: pass
+                except Exception:
+                    logger.exception("Failed to save debug log for %s.", profile['id'])
         finally:
-            if driver:
-                driver.quit()
+            if browser is not None:
+                try:
+                    browser.stop()
+                except Exception:
+                    logger.exception("Failed to stop browser for %s.", profile['id'])
                 logger.info("Session closed for %s.", profile['id'])
 
     if not all_collected_data:
@@ -652,7 +808,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except SystemExit:
         raise
     except Exception as e:
