@@ -13,14 +13,14 @@ def _env_bool(name, default):
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
 
-# Browser Selection: "chrome" (recommended) or "firefox"
-PREFERRED_BROWSER = os.getenv("PREFERRED_BROWSER", "chrome")
-
-# Headless Mode: True to run without a visible window
+# Headless Mode: True to run without a visible window. Keep False on Linux even
+# for scheduled runs: scripts/run_routine.sh wraps the scraper in xvfb-run so
+# Chrome renders on the virtual X display (real headless gets challenged by
+# Cloudflare).
 HEADLESS = _env_bool("HEADLESS", False)
 
-# Chrome binary path override (else auto-detected). Lets you pin the exact
-# browser whose major version is matched against the downloaded chromedriver.
+# Chrome binary path override (else auto-detected: PATH scan on Linux, plus
+# well-known .app bundle on macOS and Program Files installs on Windows).
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")
 
 # Google Spreadsheet & Apps Script configuration

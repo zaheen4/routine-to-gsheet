@@ -12,18 +12,20 @@ Exits 0 when everything looks ready, 1 otherwise.
 """
 import json
 import os
+import shutil
 import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config import SPREADSHEET_NAME, APP_SCRIPT_ID, setup_logging
+from config import SPREADSHEET_NAME, APP_SCRIPT_ID, HEADLESS, setup_logging
 from gsheet_formatter import (
     GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
     GOOGLE_OAUTH_CLIENT_SECRET_FILE,
     TOKEN_PICKLE_FILE,
     authenticate_gsheet,
 )
+from routine_scrapper import get_chrome_executable
 
 setup_logging()
 
@@ -41,6 +43,13 @@ def check(description, condition, detail=""):
         print("            %s" % detail)
     problems.append(description)
     return False
+
+
+def warn(description, detail=""):
+    """Report an informational check. Warnings never block the run."""
+    print("  [WARN]   %s" % description)
+    if detail:
+        print("            %s" % detail)
 
 
 def load_json(path):
@@ -95,6 +104,27 @@ def main():
     check("APP_SCRIPT_ID is configured (not placeholder)",
           bool(APP_SCRIPT_ID) and APP_SCRIPT_ID != PLACEHOLDER_ID,
           "set APP_SCRIPT_ID in .env (SETUP.md Phase A6)")
+
+    print("\nScraper environment (informational - warnings never block)")
+    chrome = get_chrome_executable()
+    if chrome:
+        print("  [OK]     Chrome binary detected: %s" % chrome)
+    else:
+        warn("Chrome/Chromium binary not detected",
+             "the scraper will abort; install Chrome/Chromium or set "
+             "CHROME_BINARY_PATH in .env")
+
+    if sys.platform.startswith("linux"):
+        if shutil.which("xvfb-run"):
+            print("  [OK]     xvfb-run available (needed by scripts/run_routine.sh)")
+        else:
+            warn("xvfb-run not found",
+                 "scripts/run_routine.sh will refuse to run on Linux without it; "
+                 "install e.g. Debian/Ubuntu: sudo apt install xvfb")
+        if HEADLESS:
+            warn("HEADLESS=true on Linux",
+                 "true headless Chrome tends to be challenged by Cloudflare; "
+                 "prefer HEADLESS=false under xvfb-run for scheduled runs")
 
     print()
     if problems:

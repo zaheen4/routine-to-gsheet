@@ -94,12 +94,10 @@ pip install -r requirements.txt
 
 ### B2. Install system dependencies
 
-- **Chrome or Chromium** — the scraper auto-detects the binary and downloads a matching chromedriver automatically: a PATH scan on Linux (`google-chrome-stable`, `google-chrome`, `chromium-browser`, `chromium`), the well-known `.app` bundle path on macOS, and Program Files / `%LOCALAPPDATA%` on Windows. If you have both Google Chrome and Chromium installed and hit a version mismatch, pin one via `CHROME_BINARY_PATH` in `.env`.
+- **Chrome or Chromium** — the scraper uses **nodriver** (the successor of `undetected-chromedriver`), which drives Chrome over the DevTools protocol directly: **no chromedriver binary is downloaded or version-matched**, so Chrome auto-updates can't cause "ChromeDriver only supports Chrome X" crashes. The binary is auto-detected (a PATH scan on Linux: `google-chrome-stable`, `google-chrome`, `chromium-browser`, `chromium`; the well-known `.app` bundle path on macOS; Program Files / `%LOCALAPPDATA%` on Windows). Pin a specific binary with `CHROME_BINARY_PATH` in `.env`. Chrome-only: Firefox is not supported.
 - **Xvfb** — needed on Linux so scheduled and `scripts/run_routine.sh` runs stay invisible (headed Chrome renders on the virtual X display; true headless would be challenged by Cloudflare). Not required on macOS or Windows.
 
-> **macOS Gatekeeper**: the first scrape downloads a chromedriver binary that macOS may quarantine ("cannot be opened because the developer cannot be verified"). If that happens, clear the quarantine once with `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (adjust to the path in the error).
->
-> **Windows Defender**: `undetected-chromedriver` patches Chrome and Windows Defender sometimes flags/quarantines it as a hacktool. If the driver keeps disappearing, add exclusions for the project folder and your Python install, then re-run the scraper to re-download it.
+> **Windows Defender**: earlier versions patched Chrome via `undetected-chromedriver`, which Defender sometimes flagged as a hacktool. That patching is gone in the nodriver-based scraper — no exclusion should be needed. If Defender still quarantines anything, add an exclusion for the project folder and your Python install.
 
 ### B3. Scaffold the configuration
 
@@ -146,7 +144,6 @@ It will **not** create `google_cloud_keys/*.json` for you (those must be downloa
 **`.env`** — set the values that apply to you (see `.env.example` for the full list):
 
 ```env
-PREFERRED_BROWSER=chrome
 HEADLESS=false
 SPREADSHEET_NAME=CSE-03_B_ClassRoutine
 TARGET_SHEET_NAME=backend
@@ -244,9 +241,19 @@ After configuration, run the preflight checker to confirm everything is reachabl
 .venv/bin/python scripts/check_setup.py
 ```
 
-It verifies the local files are valid, that the spreadsheet opens with your service account (catches the "not shared" case), and that `.env` is populated.
+It verifies the local files are valid, that the spreadsheet opens with your service account (catches the "not shared" case), and that `.env` is populated. It also reports **informational** environment checks (Chrome binary detection, `xvfb-run` availability on Linux, `HEADLESS` mode) — those only warn and never block.
 
 ---
+
+## Portability Notes
+
+The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my machine" depends on a few external factors that differ between systems:
+
+- **Xvfb package name varies by distro.** `xvfb-run` ships inside `xvfb` on Debian/Ubuntu, `xorg-x11-server-Xvfb` on Fedora/RHEL, and `xorg-server-xvfb` on Arch. `scripts/run_routine.sh` now **fails fast on Linux when `xvfb-run` is missing** (instead of silently running headed) and prints the right install command for your distro.
+- **Chrome/Chromium must be installed.** The scraper needs a real Chrome or Chromium binary (nodriver drives Chrome only). Snap-installed Chromium on some distros can't be launched with a custom profile; if auto-detection picks an unusable binary, pin one via `CHROME_BINARY_PATH`.
+- **macOS needs one interactive formatter run.** The first `gsheet_formatter.py` run opens an OAuth consent window to mint `token.pickle`. A fully headless macOS session (e.g. SSH, no GUI login) can't do that, so run it once from a GUI session, or copy `token.pickle` from another machine (see below).
+- **Cloudflare and the portal are the real fragility.** UCAM sits behind Cloudflare, and the anti-bot posture can change without warning. Stealth libraries (nodriver included) are a best-effort game of catch-up: a run that works today can fail tomorrow with a "Just a moment..." challenge. The scheduler handles this with `Restart=on-failure` + a restart cap, and the pipeline fails loudly (`sys.exit(1)`) rather than syncing stale data.
+- **There is no CI.** GitHub Actions was removed because Cloudflare blocks GitHub's datacenter IPs, so the pipeline never succeeded there. All runs happen locally (or on a machine you control).
 
 ## Troubleshooting
 
@@ -256,11 +263,10 @@ It verifies the local files are valid, that the spreadsheet opens with your serv
 | `403 ... The caller does not have permission` | Service account lacks access | Same as above. |
 | OAuth window shows **"access blocked"** | Consent screen is External but your email isn't a **test user** | Add your email under **OAuth consent screen > Test users**. |
 | Formatter says **re-auth required** / fails fast | `token.pickle` missing or refresh token expired | Run `gsheet_formatter.py` once from a session with a display. If this keeps recurring every ~week, your OAuth app is still in **Testing** mode — publish to Production (A4). |
-| **ChromeDriver version mismatch** error | Both Google Chrome and Chromium installed; wrong binary chosen | Set `CHROME_BINARY_PATH` in `.env` to your preferred binary (e.g. `/usr/bin/google-chrome-stable` on Linux, `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS, or the `chrome.exe` path on Windows). |
-| chromedriver blocked on macOS: **"cannot be opened because the developer cannot be verified"** | Gatekeeper quarantined the downloaded driver | Clear the quarantine once: `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (or the path in the error). |
-| chromedriver keeps disappearing on Windows | Windows Defender flagged `undetected-chromedriver` as a hacktool | Add an exclusion for the project folder and your Python install, then re-run the scraper to re-download it. |
-| `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
+| Scraper aborts with **"No Chrome binary found"** | Chrome/Chromium not installed or not on PATH | Install Chrome or Chromium, or set `CHROME_BINARY_PATH` in `.env` to a specific binary. |
+| `scripts/run_routine.sh` exits immediately with **xvfb-run not installed** | The Linux runner now requires a virtual X display | Install the Xvfb package for your distro (the message prints the exact command). |
 | Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
+| `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
 | A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
 | Formatter warns `APP_SCRIPT_ID is not configured` | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
 

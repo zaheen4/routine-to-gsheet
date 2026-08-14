@@ -368,26 +368,3 @@ def test_get_chrome_executable_uses_well_known_path(monkeypatch):
     monkeypatch.setattr(rs, "_platform_chrome_candidates", lambda: [fake])
     monkeypatch.setattr(rs.os.path, "isfile", lambda p: p == fake)
     assert rs.get_chrome_executable() == fake
-
-
-def test_get_chrome_major_version_parses(monkeypatch):
-    monkeypatch.setattr(rs.subprocess, "check_output", lambda *a, **k: b"Google Chrome 148.0.7778.96\n")
-    assert rs.get_chrome_major_version("/usr/bin/google-chrome-stable") == 148
-
-
-def test_get_chrome_major_version_no_binary_returns_none(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
-    assert rs.get_chrome_major_version(None) is None
-
-
-def test_get_chrome_major_version_unparseable_output(monkeypatch):
-    monkeypatch.setattr(rs.subprocess, "check_output", lambda *a, **k: b"unrecognized output\n")
-    assert rs.get_chrome_major_version("/usr/bin/google-chrome-stable") is None
-
-
-def test_get_chrome_major_version_command_failure(monkeypatch):
-    def boom(*a, **k):
-        raise OSError("not found")
-    monkeypatch.setattr(rs.subprocess, "check_output", boom)
-    assert rs.get_chrome_major_version("/usr/bin/google-chrome-stable") is None
