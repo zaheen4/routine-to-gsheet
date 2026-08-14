@@ -22,7 +22,7 @@ The pipeline has three parts:
 |---|------|--------|
 | 1 | Python 3.10+ | python.org / your OS package manager |
 | 2 | Google Chrome **or** Chromium | google.com/chrome or your OS package manager |
-| 3 | `xvfb-run` (Linux, headless only) | your OS package manager (`xvfb`) |
+| 3 | `xvfb-run` (Linux) | your OS package manager (`xvfb`) — needed for scheduled runs to stay invisible |
 | 4 | A Google account | — |
 | 5 | Your UCAM (NITER) portal username & password | your institution |
 | 6 | Your `section_label` (e.g. `A1`) | appears in the UCAM portal |
@@ -95,7 +95,7 @@ pip install -r requirements.txt
 ### B2. Install system dependencies
 
 - **Chrome or Chromium** — the scraper auto-detects the binary and downloads a matching chromedriver automatically: a PATH scan on Linux (`google-chrome-stable`, `google-chrome`, `chromium-browser`, `chromium`), the well-known `.app` bundle path on macOS, and Program Files / `%LOCALAPPDATA%` on Windows. If you have both Google Chrome and Chromium installed and hit a version mismatch, pin one via `CHROME_BINARY_PATH` in `.env`.
-- **Xvfb** — only needed on Linux without a desktop, so the scraper can run headless. Not required on macOS or Windows.
+- **Xvfb** — needed on Linux so scheduled and `scripts/run_routine.sh` runs stay invisible (headed Chrome renders on the virtual X display; true headless would be challenged by Cloudflare). Not required on macOS or Windows.
 
 > **macOS Gatekeeper**: the first scrape downloads a chromedriver binary that macOS may quarantine ("cannot be opened because the developer cannot be verified"). If that happens, clear the quarantine once with `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (adjust to the path in the error).
 >
@@ -155,6 +155,8 @@ LOG_LEVEL=INFO
 ```
 
 > `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you also rename the tabs in `apps_script/Code.gs`.
+>
+> Keep `HEADLESS=false` on Linux. True headless (`HEADLESS=true`) is detected by Cloudflare, so the portal answers every attempt with "Just a moment..." and the scrape fails. Scheduled and `scripts/run_routine.sh` runs are still invisible: the script launches the scraper under `xvfb-run`, and the scraper passes `--ozone-platform=x11`, so Chrome renders on the virtual X display instead of your screen. Direct `routine_scrapper.py` runs (no `xvfb-run`) open a visible window for debugging.
 
 ---
 
@@ -209,6 +211,8 @@ systemctl --user enable --now routine-automation.timer
 
 Check the next run with `systemctl --user list-timers`.
 
+The unit template already includes `Restart=on-failure` with a backoff (`RestartSec=300`) and a `StartLimitIntervalSec=3600` / `StartLimitBurst=3` cap, so a persistent Cloudflare block or portal outage stops retries after 3 failures within an hour (the timer still fires again the following week). No visible window appears: `run_routine.sh` wraps the scraper in `xvfb-run`, and the scraper forces `--ozone-platform=x11`, so Chrome renders on the virtual display regardless of your desktop's Wayland environment.
+
 ### D2. Windows — Task Scheduler
 
 From a PowerShell window, register a weekly task that runs the batch runner. Use the **absolute path** to `run_routine.bat` (scheduled tasks do not inherit your working directory):
@@ -256,6 +260,8 @@ It verifies the local files are valid, that the spreadsheet opens with your serv
 | chromedriver blocked on macOS: **"cannot be opened because the developer cannot be verified"** | Gatekeeper quarantined the downloaded driver | Clear the quarantine once: `xattr -dr com.apple.quarantine ~/.cache/undetected_chromedriver` (or the path in the error). |
 | chromedriver keeps disappearing on Windows | Windows Defender flagged `undetected-chromedriver` as a hacktool | Add an exclusion for the project folder and your Python install, then re-run the scraper to re-download it. |
 | `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
+| Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
+| A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
 | Formatter warns `APP_SCRIPT_ID is not configured` | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
 
 ---
@@ -265,7 +271,7 @@ It verifies the local files are valid, that the spreadsheet opens with your serv
 You only need to repeat:
 
 1. Clone + venv + `pip install -r requirements.txt`.
-2. Install Chrome/Chromium (+ Xvfb if headless).
+2. Install Chrome/Chromium (+ Xvfb on Linux for invisible scheduled runs).
 3. Copy these gitignored files from your old machine:
    - `configs_to_edit/ucam_login_credentials.json`
    - `configs_to_edit/teacher_contact_details.json`
