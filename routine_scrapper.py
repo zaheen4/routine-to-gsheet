@@ -631,7 +631,7 @@ def main():
 
     if not all_collected_data:
         logger.error("Data collection yielded zero results. Aborting export.")
-        return
+        sys.exit(1)
 
     logger.info("--- Processing Combined Results ---")
     primary_section = credentials["users"][0]["section_label"]
@@ -646,12 +646,16 @@ def main():
         save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
     else:
         logger.warning("No valid routine entries filtered.")
+        sys.exit(1)
 
     logger.info("Scraper workflow finished.")
 
 if __name__ == "__main__":
     try:
         main()
+    except SystemExit:
+        raise
     except Exception as e:
         logger.error("Fatal global error: %s", e)
         traceback.print_exc()
+        sys.exit(1)
