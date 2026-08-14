@@ -91,7 +91,7 @@ Then edit the real files it creates — your UCAM login (`configs_to_edit/ucam_l
 
 The formatter auto-creates both worksheets (`backend` and `NewMain`) if they don't already exist. A freshly created `NewMain` gets `SHEET_HEADERS` written to `B3:I3`; sorted data lands at `B4` as the Apps Script dictates.
 
-When using Chrome, the scraper auto-detects the browser binary (PATH scan on Linux, the well-known `.app` bundle path on macOS, Program Files / `%LOCALAPPDATA%` on Windows) and downloads a chromedriver matching that binary's major version. Set `CHROME_BINARY_PATH` in `.env` to force a specific binary (useful when both Google Chrome and Chromium are installed).
+The scraper uses **nodriver** (successor of `undetected-chromedriver`) to drive Chrome over the DevTools protocol directly — **no chromedriver is downloaded or version-matched**, so Chrome auto-updates can't break it. The binary is auto-detected (PATH scan on Linux, the well-known `.app` bundle path on macOS, Program Files / `%LOCALAPPDATA%` on Windows). Set `CHROME_BINARY_PATH` in `.env` to force a specific binary (useful when both Google Chrome and Chromium are installed). Chrome-only: Firefox is not supported.
 
 ---
 
