@@ -18,12 +18,24 @@ fi
 # Run the scraper
 echo "Starting routine scraper..."
 
-# Check if xvfb-run is available for headless execution
-if command -v xvfb-run >/dev/null 2>&1; then
-    echo "Executing via xvfb-run (headless mode)..."
-    xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" "$PYTHON_EXEC" routine_scrapper.py
+# On Linux the pipeline runs on a virtual X display (xvfb-run): true headless
+# Chrome gets challenged by Cloudflare, and a headed Chrome without a display
+# server crashes immediately. Fail fast with an actionable message when
+# xvfb-run is missing rather than falling back to a broken run.
+if [ "$(uname -s)" = "Linux" ]; then
+    if command -v xvfb-run >/dev/null 2>&1; then
+        echo "Executing via xvfb-run (virtual display)..."
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" "$PYTHON_EXEC" routine_scrapper.py
+    else
+        echo "ERROR: xvfb-run is not installed, but the Linux pipeline requires a virtual X display."
+        echo "Install it with your package manager, for example:"
+        echo "  Debian/Ubuntu:  sudo apt install xvfb"
+        echo "  Fedora/RHEL:    sudo dnf install xorg-x11-server-Xvfb"
+        echo "  Arch:           sudo pacman -S xorg-server-xvfb"
+        exit 1
+    fi
 else
-    echo "xvfb-run not found. Executing in standard mode..."
+    echo "Executing on non-Linux platform (no xvfb-run needed)..."
     "$PYTHON_EXEC" routine_scrapper.py
 fi
 
