@@ -1,26 +1,22 @@
+import json
 import os
 import sys
 import time
 
 import pytest
-from selenium.common.exceptions import NoSuchElementException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import routine_scrapper as rs
 
-TAG_NAME = "tag name"
-S2_CONTAINER_XPATH = (
-    f"//select[@id='{rs.SEMESTER_DROPDOWN_ID}']/"
-    f"following-sibling::span[contains(@class,'select2-container')]"
-)
-TABLE_XPATH = (
-    f"//div[@id='{rs.UPDATE_PANEL_ID}']//table[@id='{rs.COURSE_TABLE_ID}']"
-)
+TABLE_CSS = f"#{rs.UPDATE_PANEL_ID} #{rs.COURSE_TABLE_ID}"
 
 
-def _s2_option_xpath(text):
-    return f"//span[contains(@class, 'select2-results')]//li[text()=\"{text}\"]"
+def _semester_options_json(target_text="Fall 2024"):
+    return json.dumps([
+        {"text": "Select Semester", "value": "0"},
+        {"text": target_text, "value": "7"},
+    ])
 
 
 class FakeElement:
@@ -31,69 +27,68 @@ class FakeElement:
         self.sent_keys = ""
         self.clicked = False
 
-    def get_attribute(self, name):
-        if name == "value":
-            return self._value
-        if name == "innerHTML":
-            return self.html
-        return None
-
-    def is_displayed(self):
-        return True
-
-    def is_enabled(self):
-        return True
-
-    def send_keys(self, keys):
+    async def send_keys(self, keys):
         self.sent_keys = keys
 
-    def click(self):
+    async def click(self):
         self.clicked = True
 
 
-class FakeSelect(FakeElement):
-    def __init__(self, options):
-        super().__init__()
-        self.options = options
-
-    def find_elements(self, by, value):
-        if str(by).lower() == TAG_NAME and value == "option":
-            return self.options
-        return []
-
-
-class FakeDriver:
-    """Minimal driver double: finds elements from a registry and records calls."""
+class FakeTab:
+    """Async double for a nodriver Tab: scripted gets/selects/evaluates."""
 
     def __init__(self, title="UCAM", titles=None, elements=None, source=""):
         self.title = title
         self._titles = list(titles) if titles else None
         self.current_url = ""
-        self.page_source = source
         self.gets = []
+        self.evaluations = []
         self._elements = elements or {}
+        self._content = source
+        self.eval_map = {}
+        self.eval_default = None
 
-    def get(self, url):
+    async def get(self, url):
         self.gets.append(url)
         self.current_url = url
         if self._titles:
             self.title = self._titles.pop(0)
 
-    def find_element(self, by, value):
-        key = (by, value)
-        if key in self._elements:
-            return self._elements[key]
-        raise NoSuchElementException(f"no element for {key}")
+    async def sleep(self, t):
+        pass
 
-    def find_elements(self, by, value):
-        key = (by, value)
-        result = self._elements.get(key, [])
-        return result if isinstance(result, list) else [result]
+    async def select(self, css, timeout=10):
+        return self._elements.get(css)
+
+    async def evaluate(self, expression):
+        self.evaluations.append(expression)
+        if expression.strip() == "document.title":
+            return self.title
+        if expression in self.eval_map:
+            value = self.eval_map[expression]
+            return value(self, expression) if callable(value) else value
+        if self.eval_default is not None:
+            value = self.eval_default
+            return value(self, expression) if callable(value) else value
+        return None
+
+    async def get_content(self):
+        return self._content
 
 
 @pytest.fixture(autouse=True)
-def _fast_time(monkeypatch):
-    monkeypatch.setattr(time, "sleep", lambda s: None)
+def _fast_clock(monkeypatch):
+    ticks = [0.0]
+
+    def monotonic():
+        ticks[0] += 1.0
+        return ticks[0]
+
+    async def noop_sleep(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(time, "monotonic", monotonic)
+    monkeypatch.setattr(rs.asyncio, "sleep", noop_sleep)
     for attr in (
         "LOGIN_WAIT_S",
         "LOGIN_FIELD_WAIT_S",
@@ -104,33 +99,45 @@ def _fast_time(monkeypatch):
         monkeypatch.setattr(rs, attr, 0.01)
 
 
-def _by_id(**kwargs):
-    return {(rs.By.ID, k): v for k, v in kwargs.items()}
-
-
-def _login_elements(user="", password="", button=True, success=True):
-    elements = _by_id(
-        logMain_UserName=FakeElement(),
-        logMain_Password=FakeElement(),
-        logMain_Button1=FakeElement(),
-    )
+def _login_tab(success=True, **elements):
+    tab = FakeTab(elements={
+        f"#{rs.LOGIN_USERNAME_ID}": FakeElement(),
+        f"#{rs.LOGIN_PASSWORD_ID}": FakeElement(),
+        f"#{rs.LOGIN_BUTTON_ID}": FakeElement(),
+        **elements,
+    })
     if success:
-        elements[(rs.By.ID, rs.LOGIN_SUCCESS_ID)] = FakeElement()
-    return elements
+        tab._elements[f"#{rs.LOGIN_SUCCESS_ID}"] = FakeElement()
+    return tab
+
+
+def _semester_tab(target_text="Fall 2024", with_dashboard=False):
+    tab = FakeTab()
+    tab.eval_map[rs._semester_options_js()] = _semester_options_json(target_text)
+    tab.eval_map[rs._select2_selection_js()] = True
+    tab.eval_map[rs._select2_option_js(target_text)] = True
+    if with_dashboard:
+        tab.eval_map[rs._dashboard_html_js()] = SAMPLE_DASHBOARD_HTML
+        tab._elements[TABLE_CSS] = FakeElement()
+    return tab
 
 
 # ----------------------------- masking_visit -----------------------------
 
-def test_masking_visit_navigates_to_google():
-    driver = FakeDriver()
-    rs.masking_visit(driver)
-    assert driver.gets == ["https://www.google.com"]
+async def test_masking_visit_navigates_to_google():
+    tab = FakeTab()
+    await rs.masking_visit(tab)
+    assert tab.gets == ["https://www.google.com"]
 
 
-def test_masking_visit_tolerates_driver_failure():
-    driver = FakeDriver()
-    driver.get = lambda url: (_ for _ in ()).throw(RuntimeError("boom"))
-    rs.masking_visit(driver)  # must not raise
+async def test_masking_visit_tolerates_tab_failure():
+    tab = FakeTab()
+
+    async def boom(url):
+        raise RuntimeError("boom")
+
+    tab.get = boom
+    await rs.masking_visit(tab)  # must not raise
 
 
 # ----------------------------- _is_cloudflare_blocked -----------------------------
@@ -144,148 +151,125 @@ def test_cloudflare_markers_detected():
 
 # ----------------------------- bypass_cloudflare_and_wait_for_login -----------------------------
 
-def test_bypass_succeeds_when_login_fields_present():
-    driver = FakeDriver(elements=_login_elements())
-    rs.bypass_cloudflare_and_wait_for_login(driver, "https://login")
-    assert driver.gets == ["https://login"]
+async def test_bypass_succeeds_when_login_fields_present():
+    tab = _login_tab()
+    await rs.bypass_cloudflare_and_wait_for_login(tab, "https://login")
+    assert tab.gets == ["https://login"]
 
 
-def test_bypass_retries_through_cloudflare_then_succeeds():
-    driver = FakeDriver(
+async def test_bypass_retries_through_cloudflare_then_succeeds():
+    tab = FakeTab(
         titles=["Just a moment...", "UCAM Student Portal"],
-        elements=_login_elements(),
+        elements={f"#{rs.LOGIN_USERNAME_ID}": FakeElement()},
     )
-    rs.bypass_cloudflare_and_wait_for_login(driver, "https://login")
-    assert driver.gets == ["https://login", "https://login"]
+    await rs.bypass_cloudflare_and_wait_for_login(tab, "https://login")
+    assert tab.gets == ["https://login", "https://login"]
 
 
-def test_bypass_raises_when_login_never_appears():
-    driver = FakeDriver(title="UCAM Student Portal", elements={}, source="snippet")
-    with pytest.raises(rs.TimeoutException):
-        rs.bypass_cloudflare_and_wait_for_login(driver, "https://login")
-    assert len(driver.gets) == rs.PORTAL_ACCESS_ATTEMPTS
+async def test_bypass_raises_when_login_never_appears():
+    tab = FakeTab(title="UCAM Student Portal", source="snippet")
+    with pytest.raises(rs.ScrapeTimeoutError):
+        await rs.bypass_cloudflare_and_wait_for_login(tab, "https://login")
+    assert len(tab.gets) == rs.PORTAL_ACCESS_ATTEMPTS
 
 
 # ----------------------------- authenticate -----------------------------
 
-def test_authenticate_fills_form_and_clicks():
+async def test_authenticate_fills_form_and_clicks():
     user_field, pass_field, login_btn = FakeElement(), FakeElement(), FakeElement()
-    elements = _by_id(
-        logMain_UserName=user_field,
-        logMain_Password=pass_field,
-        logMain_Button1=login_btn,
-        ctl00_lbtnUserName=FakeElement(),
+    tab = _login_tab(
+        **{
+            f"#{rs.LOGIN_USERNAME_ID}": user_field,
+            f"#{rs.LOGIN_PASSWORD_ID}": pass_field,
+            f"#{rs.LOGIN_BUTTON_ID}": login_btn,
+        }
     )
-    driver = FakeDriver(elements=elements)
     creds = {"username": "u", "password": "p", "id": 1}
-    rs.authenticate(creds, driver)
+    await rs.authenticate(creds, tab)
     assert user_field.sent_keys == "u"
     assert pass_field.sent_keys == "p"
     assert login_btn.clicked is True
 
 
-def test_authenticate_raises_when_success_element_missing():
+async def test_authenticate_raises_when_success_element_missing():
     user_field, pass_field, login_btn = FakeElement(), FakeElement(), FakeElement()
-    elements = _by_id(
-        logMain_UserName=user_field,
-        logMain_Password=pass_field,
-        logMain_Button1=login_btn,
-    )
-    driver = FakeDriver(elements=elements)
-    with pytest.raises(rs.TimeoutException):
-        rs.authenticate({"username": "u", "password": "p", "id": 1}, driver)
+    tab = FakeTab(elements={
+        f"#{rs.LOGIN_USERNAME_ID}": user_field,
+        f"#{rs.LOGIN_PASSWORD_ID}": pass_field,
+        f"#{rs.LOGIN_BUTTON_ID}": login_btn,
+    })
+    with pytest.raises(rs.ScrapeTimeoutError):
+        await rs.authenticate({"username": "u", "password": "p", "id": 1}, tab)
 
 
 # ----------------------------- select_semester -----------------------------
 
-def _semester_driver(target_text="Fall 2024"):
-    dropdown = FakeSelect(
-        [
-            FakeElement(text="Select Semester", value="0"),
-            FakeElement(text=target_text, value="7"),
-        ]
-    )
-    s2_container, s2_option = FakeElement(), FakeElement()
-    elements = _by_id(ctl00_MainContainer_ddlHeldIn=dropdown)
-    elements[(rs.By.XPATH, S2_CONTAINER_XPATH)] = s2_container
-    elements[(rs.By.XPATH, _s2_option_xpath(target_text))] = s2_option
-    return FakeDriver(elements=elements), s2_container, s2_option
-
-
-def test_select_semester_chooses_first_non_placeholder():
-    driver, s2_container, s2_option = _semester_driver("Fall 2024")
-    chosen = rs.select_semester(driver, "https://dash", "B1")
+async def test_select_semester_chooses_first_non_placeholder():
+    tab = _semester_tab("Fall 2024")
+    chosen = await rs.select_semester(tab, "https://dash", "B1")
     assert chosen == "Fall 2024"
-    assert s2_container.clicked is True
-    assert s2_option.clicked is True
-    assert driver.gets[-1] == "https://dash"
+    assert tab.gets[-1] == "https://dash"
+    assert rs._select2_selection_js() in tab.evaluations
+    assert rs._select2_option_js("Fall 2024") in tab.evaluations
 
 
-def test_select_semester_raises_with_no_valid_option():
-    driver = FakeDriver(
-        elements=_by_id(ctl00_MainContainer_ddlHeldIn=FakeSelect([]))
+async def test_select_semester_raises_with_no_valid_option():
+    tab = FakeTab()
+    tab.eval_map[rs._semester_options_js()] = json.dumps(
+        [{"text": "Select Semester", "value": "0"}]
     )
     with pytest.raises(ValueError):
-        rs.select_semester(driver, "https://dash", "B1")
+        await rs.select_semester(tab, "https://dash", "B1")
+
+
+async def test_select_semester_raises_when_dropdown_missing():
+    tab = FakeTab()
+    with pytest.raises(rs.ScrapeTimeoutError):
+        await rs.select_semester(tab, "https://dash", "B1")
 
 
 # ----------------------------- extract_dashboard -----------------------------
 
-def test_extract_dashboard_returns_parsed_entries(tmp_path, monkeypatch):
+async def test_extract_dashboard_returns_parsed_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
-    panel = FakeElement(html=SAMPLE_DASHBOARD_HTML)
-    elements = _by_id(ctl00_MainContainer_UpdatePanel02=panel)
-    elements[(rs.By.XPATH, TABLE_XPATH)] = FakeElement()
-    driver = FakeDriver(elements=elements)
-    entries = rs.extract_dashboard(driver, "B1")
+    tab = _semester_tab(with_dashboard=True)
+    entries = await rs.extract_dashboard(tab, "B1")
     assert len(entries) == 1
     assert entries[0]["CourseCode"] == "CSE-3201"
     assert (tmp_path / "dashboard_data_B1.csv").exists()
     assert (tmp_path / "dashboard_data_B1.json").exists()
 
 
-def test_extract_dashboard_no_html_returns_empty(monkeypatch):
+async def test_extract_dashboard_no_html_returns_empty(monkeypatch):
     monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", "/tmp/nonexistent_dir")
-    panel = FakeElement(html=None)
-    elements = _by_id(ctl00_MainContainer_UpdatePanel02=panel)
-    elements[(rs.By.XPATH, TABLE_XPATH)] = FakeElement()
-    driver = FakeDriver(elements=elements)
-    assert rs.extract_dashboard(driver, "B1") == []
+    tab = FakeTab()
+    tab._elements[TABLE_CSS] = FakeElement()
+    assert await rs.extract_dashboard(tab, "B1") == []
 
 
 # ----------------------------- scrape_dashboard_for_user -----------------------------
 
-def test_scrape_dashboard_for_user_runs_full_flow(tmp_path, monkeypatch):
+async def test_scrape_dashboard_for_user_runs_full_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
     user_field, pass_field, login_btn = FakeElement(), FakeElement(), FakeElement()
-    dropdown = FakeSelect([FakeElement(text="Fall 2024", value="7")])
-    panel = FakeElement(html=SAMPLE_DASHBOARD_HTML)
-    s2_container, s2_option = FakeElement(), FakeElement()
-
-    elements = _by_id(
-        logMain_UserName=user_field,
-        logMain_Password=pass_field,
-        logMain_Button1=login_btn,
-        ctl00_lbtnUserName=FakeElement(),
-        ctl00_MainContainer_ddlHeldIn=dropdown,
-        ctl00_MainContainer_UpdatePanel02=panel,
-    )
-    elements[(rs.By.XPATH, S2_CONTAINER_XPATH)] = s2_container
-    elements[(rs.By.XPATH, _s2_option_xpath("Fall 2024"))] = s2_option
-    elements[(rs.By.XPATH, TABLE_XPATH)] = FakeElement()
-    driver = FakeDriver(elements=elements)
+    tab = _semester_tab("Fall 2024", with_dashboard=True)
+    tab._elements.update({
+        f"#{rs.LOGIN_USERNAME_ID}": user_field,
+        f"#{rs.LOGIN_PASSWORD_ID}": pass_field,
+        f"#{rs.LOGIN_BUTTON_ID}": login_btn,
+        f"#{rs.LOGIN_SUCCESS_ID}": FakeElement(),
+    })
 
     creds = {"id": 1, "username": "u", "password": "p", "section_label": "B1"}
     urls = {"login_url": "https://login", "attendance_dashboard_url": "https://dash"}
 
-    entries = rs.scrape_dashboard_for_user(driver, creds, urls)
+    entries = await rs.scrape_dashboard_for_user(tab, creds, urls)
     assert len(entries) == 1
-    assert driver.gets[0] == "https://www.google.com"
-    assert "https://login" in driver.gets
-    assert driver.gets[-1] == "https://dash"
+    assert tab.gets[0] == "https://www.google.com"
+    assert "https://login" in tab.gets
+    assert tab.gets[-1] == "https://dash"
     assert user_field.sent_keys == "u"
     assert login_btn.clicked is True
-    assert s2_option.clicked is True
 
 
 SAMPLE_DASHBOARD_HTML = """
