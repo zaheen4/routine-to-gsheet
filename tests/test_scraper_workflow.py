@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -284,3 +285,137 @@ SAMPLE_DASHBOARD_HTML = """
 </tr>
 </table>
 """
+
+
+# ----------------------------- scrape_account_with_retries -----------------------------
+
+class FakeBrowser:
+    def __init__(self):
+        self.stopped = False
+        self.main_tab = FakeTab()
+
+    def stop(self):
+        self.stopped = True
+
+
+async def test_scrape_account_with_retries_succeeds_first_attempt(monkeypatch):
+    launches = []
+
+    async def fake_launch():
+        launches.append(1)
+        return FakeBrowser()
+
+    entries = [{"CourseCode": "CSE-3201"}]
+
+    async def fake_scrape(tab, profile, urls):
+        return entries
+
+    monkeypatch.setattr(rs, "launch_browser", fake_launch)
+    monkeypatch.setattr(rs, "scrape_dashboard_for_user", fake_scrape)
+
+    profile = {"id": 1, "section_label": "B1"}
+    urls = {"login_url": "x", "attendance_dashboard_url": "y"}
+    result = await rs.scrape_account_with_retries(profile, urls)
+    assert result == entries
+    assert len(launches) == 1
+
+
+async def test_scrape_account_with_retries_retries_then_succeeds(monkeypatch, tmp_path):
+    monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
+    launches = []
+    calls = []
+
+    async def fake_launch():
+        launches.append(1)
+        return FakeBrowser()
+
+    async def fake_scrape(tab, profile, urls):
+        calls.append(1)
+        if len(calls) == 1:
+            raise rs.nd.ProtocolException("Could not find node with given id")
+        return [{"CourseCode": "CSE-3201"}]
+
+    monkeypatch.setattr(rs, "launch_browser", fake_launch)
+    monkeypatch.setattr(rs, "scrape_dashboard_for_user", fake_scrape)
+
+    profile = {"id": 1, "section_label": "B1"}
+    urls = {"login_url": "x", "attendance_dashboard_url": "y"}
+    result = await rs.scrape_account_with_retries(profile, urls)
+    assert result == [{"CourseCode": "CSE-3201"}]
+    assert len(calls) == 2
+    assert len(launches) == 2
+
+
+async def test_scrape_account_with_retries_exhausts_attempts(monkeypatch, tmp_path):
+    monkeypatch.setattr(rs, "ACCOUNT_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
+    launches = []
+
+    async def fake_launch():
+        launches.append(1)
+        return FakeBrowser()
+
+    async def fake_scrape(tab, profile, urls):
+        raise rs.ScrapeTimeoutError("boom")
+
+    monkeypatch.setattr(rs, "launch_browser", fake_launch)
+    monkeypatch.setattr(rs, "scrape_dashboard_for_user", fake_scrape)
+
+    profile = {"id": 1, "section_label": "B1"}
+    urls = {"login_url": "x", "attendance_dashboard_url": "y"}
+    with pytest.raises(rs.ScrapeTimeoutError):
+        await rs.scrape_account_with_retries(profile, urls)
+    assert len(launches) == 2
+    assert (tmp_path / "error_log_1.html").exists()
+
+
+# ----------------------------- main: fail-stop policy -----------------------------
+
+def _minimal_creds():
+    return {
+        "users": [{"id": 1, "section_label": "B2"}],
+        "login_url": "https://login",
+        "attendance_dashboard_url": "https://dash",
+    }
+
+
+def test_main_exits_when_an_account_fails(monkeypatch):
+    monkeypatch.setattr(rs, "load_credentials", lambda path: _minimal_creds())
+    monkeypatch.setattr(rs, "load_teacher_details_from_file", lambda path: {})
+
+    async def fake_retries(profile, urls):
+        raise rs.ScrapeTimeoutError("boom")
+
+    monkeypatch.setattr(rs, "scrape_account_with_retries", fake_retries)
+
+    with pytest.raises(SystemExit) as exc:
+        asyncio.run(rs.main())
+    assert exc.value.code == 1
+
+
+def test_main_exports_when_all_accounts_succeed(monkeypatch, tmp_path):
+    monkeypatch.setattr(rs, "FORMATTED_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(rs, "load_credentials", lambda path: _minimal_creds())
+    monkeypatch.setattr(rs, "load_teacher_details_from_file", lambda path: {})
+
+    item = {
+        "SL": "1",
+        "UserScrapedSection": "B2",
+        "CourseCode": "CSE-3201",
+        "CourseTitle": "Operating Systems",
+        "CourseSection": "B",
+        "ScheduleOne_Day": "Sun",
+        "ScheduleOne_Time": "11:0 - 12:15",
+        "ScheduleOne_Room": "120",
+        "ScheduleOne_TeacherInitial": "SS",
+    }
+
+    async def fake_retries(profile, urls):
+        return [item]
+
+    monkeypatch.setattr(rs, "scrape_account_with_retries", fake_retries)
+
+    asyncio.run(rs.main())
+    assert (tmp_path / "final_combined_routine.json").exists()
+    assert (tmp_path / "final_combined_routine.csv").exists()
+

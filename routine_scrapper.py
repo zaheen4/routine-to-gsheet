@@ -34,6 +34,9 @@ ATTENDANCE_DATA_JSON_FILENAME_TPL = 'dashboard_data_{section}.json'
 FINAL_ROUTINE_CSV_FILENAME = 'final_combined_routine.csv'
 FINAL_ROUTINE_JSON_FILENAME = 'final_combined_routine.json'
 
+# Retry policy for transient per-account failures (CDP node races, timeouts)
+ACCOUNT_RETRY_ATTEMPTS = 2
+
 
 # [Data Loading Functions]
 
@@ -733,6 +736,57 @@ async def launch_browser():
     )
 
 
+async def scrape_account_with_retries(profile, common_urls):
+    """
+    Runs the full scraping workflow for one account, retrying transient
+    failures (CDP node races, network blips, timeouts) with a fresh browser
+    session per attempt. Returns the collected dashboard entries on success
+    and re-raises the last error once all attempts are exhausted.
+    """
+    last_exc = None
+    for attempt in range(1, ACCOUNT_RETRY_ATTEMPTS + 1):
+        browser = None
+        tab = None
+        logger.info(
+            "--- Initializing Session: %s (attempt %d/%d) ---",
+            profile['id'], attempt, ACCOUNT_RETRY_ATTEMPTS,
+        )
+        try:
+            browser = await launch_browser()
+            tab = _session_tab(browser)
+            return await scrape_dashboard_for_user(tab, profile, common_urls)
+        except Exception as e:
+            last_exc = e
+            logger.error(
+                "Workflow Exception for %s (attempt %d/%d): %s",
+                profile['id'], attempt, ACCOUNT_RETRY_ATTEMPTS, e,
+            )
+            if tab is not None:
+                try:
+                    os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
+                    log_path = os.path.join(
+                        TMP_OUTPUT_DIR, f"error_log_{profile['id']}.html"
+                    )
+                    content = await _safe_get_content(tab)
+                    with open(log_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    logger.info("Debug log saved: %s", log_path)
+                except Exception:
+                    logger.exception("Failed to save debug log for %s.", profile['id'])
+            if attempt < ACCOUNT_RETRY_ATTEMPTS:
+                logger.warning(
+                    "Retrying %s with a fresh browser session...", profile['id']
+                )
+        finally:
+            if browser is not None:
+                try:
+                    browser.stop()
+                except Exception:
+                    logger.exception("Failed to stop browser for %s.", profile['id'])
+                logger.info("Session closed for %s.", profile['id'])
+    raise last_exc
+
+
 # [Main Workflow]
 
 async def main():
@@ -749,6 +803,7 @@ async def main():
 
     teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
     all_collected_data = []
+    failed_accounts = []
 
     common_urls = {
         "login_url": credentials["login_url"],
@@ -756,34 +811,22 @@ async def main():
     }
 
     for profile in credentials["users"]:
-        browser = None
-        tab = None
         try:
-            logger.info("--- Initializing Session: %s ---", profile['id'])
-            browser = await launch_browser()
-            tab = _session_tab(browser)
-            user_data = await scrape_dashboard_for_user(tab, profile, common_urls)
+            user_data = await scrape_account_with_retries(profile, common_urls)
             all_collected_data.extend(user_data)
-
         except Exception as e:
-            logger.error("Workflow Exception for %s: %s", profile['id'], e)
-            if tab is not None:
-                try:
-                    os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-                    log_path = os.path.join(TMP_OUTPUT_DIR, f"error_log_{profile['id']}.html")
-                    content = await _safe_get_content(tab)
-                    with open(log_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    logger.info("Debug log saved: %s", log_path)
-                except Exception:
-                    logger.exception("Failed to save debug log for %s.", profile['id'])
-        finally:
-            if browser is not None:
-                try:
-                    browser.stop()
-                except Exception:
-                    logger.exception("Failed to stop browser for %s.", profile['id'])
-                logger.info("Session closed for %s.", profile['id'])
+            logger.error(
+                "Account %s failed after %d attempt(s): %s",
+                profile['id'], ACCOUNT_RETRY_ATTEMPTS, e,
+            )
+            failed_accounts.append(profile['id'])
+
+    if failed_accounts:
+        logger.error(
+            "Aborting export due to failed account(s): %s. Partial data will not be published.",
+            ", ".join(str(f) for f in failed_accounts),
+        )
+        sys.exit(1)
 
     if not all_collected_data:
         logger.error("Data collection yielded zero results. Aborting export.")
