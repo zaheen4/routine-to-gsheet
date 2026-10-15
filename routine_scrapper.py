@@ -1,17 +1,20 @@
+import asyncio
+import contextlib
+import csv
 import json
+import logging
+import os
+import re
 import sys
 import time
-import asyncio
 import traceback
-import logging
+from datetime import datetime, timezone
+
 import nodriver as nd
 from bs4 import BeautifulSoup
-import os
-import csv
-import re
-import shutil
 
-from config import HEADLESS, CHROME_BINARY_PATH, setup_logging
+from browser_lookup import get_chrome_executable as resolve_chrome_executable
+from config import CHROME_BINARY_PATH, HEADLESS, setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -40,6 +43,44 @@ ACCOUNT_RETRY_ATTEMPTS = 2
 
 # [Data Loading Functions]
 
+# Roles an account can have. "primary" is the student's own section (keeps all
+# courses); "lab_merge" accounts contribute their lab courses only.
+USER_ROLES = ("primary", "lab_merge")
+
+
+def resolve_user_roles(users):
+    """
+    Fills in an explicit role for every account and validates the assignment.
+
+    ``role`` is optional and defaults to the historical positional behaviour
+    (users[0] = primary, every other account = lab_merge).
+
+    Returns:
+        tuple(list | None, str | None): (accounts with ``role`` set, error).
+        The list is None when the assignment is invalid.
+    """
+    resolved = []
+    primary_count = 0
+    for index, user in enumerate(users):
+        role = user.get("role")
+        if role is None:
+            role = "primary" if index == 0 else "lab_merge"
+        elif role not in USER_ROLES:
+            return None, (
+                f"users[{index}] has unknown role {role!r} "
+                f"(expected one of: {', '.join(USER_ROLES)})"
+            )
+        if role == "primary":
+            primary_count += 1
+        resolved.append(dict(user, role=role))
+
+    if primary_count != 1:
+        return None, (
+            f"exactly one account must have role 'primary', found {primary_count}"
+        )
+    return resolved, None
+
+
 def load_credentials(file_path):
     """
     Loads and validates UCAM authentication credentials from a JSON source.
@@ -49,24 +90,30 @@ def load_credentials(file_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(script_dir, file_path)
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             credentials = json.load(f)
-        
+
         required_top_keys = ["users", "login_url", "attendance_dashboard_url"]
         if not all(key in credentials for key in required_top_keys):
             logger.error("Missing top-level keys in %s", file_path)
             return None
-            
+
         if not isinstance(credentials["users"], list) or not credentials["users"]:
             logger.error("'users' array is missing or empty.")
             return None
-            
+
         for user in credentials["users"]:
             required_user_keys = ["id", "username", "password", "section_label"]
             if not all(key in user for key in required_user_keys):
                 logger.error("Missing required user keys for ID: %s", user.get('id'))
                 return None
-                
+
+        resolved_users, role_error = resolve_user_roles(credentials["users"])
+        if role_error:
+            logger.error("Invalid account roles in %s: %s", file_path, role_error)
+            return None
+        credentials["users"] = resolved_users
+
         return credentials
     except Exception as e:
         logger.error("Critical error loading credentials: %s", e)
@@ -81,7 +128,7 @@ def load_teacher_details_from_file(file_path):
         file_path = os.path.join(script_dir, file_path)
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             teacher_details = json.load(f)
         if isinstance(teacher_details, dict):
             teacher_details = {
@@ -163,35 +210,99 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
 def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=None):
     """
     Persists data to disk in the specified format.
+
+    The write is atomic: content lands in a temporary sibling file which is
+    only renamed over the target once it is fully flushed, so an interrupted
+    run can never leave a truncated CSV/JSON for the next stage to read.
+
+    Returns:
+        bool: True when the file was written, False otherwise.
     """
-    if not data: return
-    os.makedirs(output_dir, exist_ok=True)
+    if not data:
+        return False
+
     output_file_path = os.path.join(output_dir, filename)
+    tmp_file_path = f"{output_file_path}.tmp"
+
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        logger.error("Failed to prepare output directory '%s': %s", output_dir, e)
+        return False
 
     if file_type == 'csv':
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
             logger.error("Invalid CSV data format for %s", filename)
-            return
+            return False
 
         if fieldnames is None:
             fieldnames = list(data[0].keys())
 
         try:
-            with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
+            with open(tmp_file_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                 writer.writeheader()
                 writer.writerows(data)
-            logger.info("Exported CSV: %s", output_file_path)
-        except Exception as e:
-            logger.error("Failed to export CSV: %s", e)
-            
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            logger.error("Failed to export CSV '%s': %s", output_file_path, e)
+            _discard_file(tmp_file_path)
+            return False
+
     elif file_type == 'json':
         try:
-            with open(output_file_path, 'w', encoding='utf-8') as f:
+            with open(tmp_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            logger.info("Exported JSON: %s", output_file_path)
-        except Exception as e:
-            logger.error("Failed to export JSON: %s", e)
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, TypeError, ValueError) as e:
+            logger.error("Failed to export JSON '%s': %s", output_file_path, e)
+            _discard_file(tmp_file_path)
+            return False
+
+    else:
+        logger.error("Unsupported file type '%s' for %s", file_type, filename)
+        return False
+
+    try:
+        os.replace(tmp_file_path, output_file_path)
+    except OSError as e:
+        logger.error("Failed to finalize '%s': %s", output_file_path, e)
+        _discard_file(tmp_file_path)
+        return False
+
+    logger.info("Exported %s: %s", file_type.upper(), output_file_path)
+    return True
+
+
+def _discard_file(path):
+    """Best-effort removal of a temporary file; never raises."""
+    with contextlib.suppress(OSError):
+        os.remove(path)
+
+
+def invalidate_previous_output(output_dir):
+    """
+    Removes the previous run's combined output before a new scrape starts.
+
+    The formatter publishes whatever routine JSON it finds, so a run that dies
+    before writing (SIGKILL, disk full, systemd timeout) must not leave last
+    week's file on disk where it would look like this week's data. Per-section
+    dumps in tmp/ are kept for post-mortem debugging.
+    """
+    removed = []
+    for filename in (FINAL_ROUTINE_JSON_FILENAME, FINAL_ROUTINE_CSV_FILENAME):
+        path = os.path.join(output_dir, filename)
+        try:
+            os.remove(path)
+            removed.append(filename)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.error("Could not remove stale output '%s': %s", path, e)
+    if removed:
+        logger.info("Invalidated previous output: %s", ", ".join(removed))
 
 
 # [Data Merging Functions]
@@ -247,13 +358,28 @@ def missing_teacher_initials(all_collected_data, teacher_details):
     return sorted(initial for initial in scraped if initial not in known)
 
 
-def build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details):
+LAB_TITLE_RE = re.compile(r"\blab\b", re.IGNORECASE)
+
+
+def _lab_section_set(lab_sections):
+    """Normalises the lab-section argument (None | str | iterable) to a set."""
+    if not lab_sections:
+        return set()
+    if isinstance(lab_sections, str):
+        return {lab_sections}
+    return {section for section in lab_sections if section}
+
+
+def build_final_routine(all_collected_data, primary_section, lab_sections, teacher_details):
     """
     Merges per-section scraped data into the final deduplicated routine.
 
-    The primary section keeps all courses; the secondary section contributes
-    only lab courses (title contains "lab"). Entries are deduplicated by
-    (CourseCode, Day, TimeSlot, Section).
+    The primary section keeps all courses; every lab_merge section contributes
+    only lab courses (title contains the word "lab"). Entries are deduplicated
+    by (CourseCode, Day, TimeSlot, Section).
+
+    Args:
+        lab_sections: A single section label, None, or an iterable of labels.
     """
     missing = missing_teacher_initials(all_collected_data, teacher_details)
     if missing:
@@ -262,13 +388,14 @@ def build_final_routine(all_collected_data, primary_section, secondary_section, 
             ", ".join(missing),
         )
 
+    lab_section_labels = _lab_section_set(lab_sections)
     final_routine = []
 
     for item in all_collected_data:
-        is_lab = "lab" in item.get("CourseTitle", "").lower()
+        is_lab = bool(LAB_TITLE_RE.search(item.get("CourseTitle", "")))
         item_section = item.get("UserScrapedSection")
 
-        if item_section == primary_section or (item_section == secondary_section and is_lab):
+        if item_section == primary_section or (item_section in lab_section_labels and is_lab):
             for prefix in ("ScheduleOne", "ScheduleTwo"):
                 entry = _schedule_entry(item, prefix, teacher_details)
                 if entry:
@@ -410,7 +537,8 @@ async def _evaluate_until(tab, expression, timeout, interval=EVALUATE_POLL_S, pr
     satisfy the predicate.
     """
     if predicate is None:
-        predicate = lambda value: value is not None
+        def predicate(value):
+            return value is not None
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -601,6 +729,10 @@ async def extract_dashboard(tab, section_label):
     """
     Reads the course list table HTML from the dashboard panel and persists the
     parsed entries to per-section CSV/JSON files.
+
+    When the table element is present but no rows parse, the raw panel HTML is
+    dumped to tmp/ so the failure (usually portal markup drift) is diagnosable
+    after the fact instead of only leaving "no valid entries" in the log.
     """
     table = await tab.select(
         f"#{UPDATE_PANEL_ID} #{COURSE_TABLE_ID}", timeout=COURSE_TABLE_WAIT_S
@@ -611,17 +743,40 @@ async def extract_dashboard(tab, section_label):
         )
 
     dashboard_html = await _read_dashboard_html(tab)
-    user_dashboard_data = []
+    if not dashboard_html:
+        logger.error(
+            "Update panel '%s' returned no HTML for section %s; cannot extract the course table.",
+            UPDATE_PANEL_ID,
+            section_label,
+        )
+        return []
 
-    if dashboard_html:
-        os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-        user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
+    os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
+    user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
 
-        if user_dashboard_data:
-            dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
-            dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv, "csv")
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
+    if not user_dashboard_data:
+        failure_path = os.path.join(
+            TMP_OUTPUT_DIR,
+            ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL.format(section=section_label),
+        )
+        try:
+            with open(failure_path, "w", encoding="utf-8") as f:
+                f.write(dashboard_html)
+            logger.error(
+                "Parsed 0 course rows for section %s even though table '%s' is "
+                "present (likely portal markup drift). Raw panel HTML saved to %s.",
+                section_label,
+                COURSE_TABLE_ID,
+                failure_path,
+            )
+        except OSError:
+            logger.exception("Failed to save diagnostic HTML for section %s.", section_label)
+        return []
+
+    dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
+    dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
+    save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv, "csv")
+    save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
 
     return user_dashboard_data
 
@@ -629,6 +784,10 @@ async def extract_dashboard(tab, section_label):
 async def scrape_dashboard_for_user(tab, user_creds, common_urls):
     """
     Executes the scraping workflow for a specific user profile.
+
+    Returns:
+        tuple(list, str): the parsed dashboard entries and the semester label
+        that was selected on the portal.
     """
     section_label = user_creds['section_label']
     logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
@@ -642,63 +801,24 @@ async def scrape_dashboard_for_user(tab, user_creds, common_urls):
         logger.error("Authentication Failure: %s", type(e).__name__)
         raise
 
-    await select_semester(tab, common_urls['attendance_dashboard_url'], section_label)
-    return await extract_dashboard(tab, section_label)
-
-CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
-
-def _platform_chrome_candidates():
-    """
-    Well-known Chrome/Chromium install paths, by platform.
-
-    macOS .app bundles and Windows Program Files installs are not on PATH,
-    so `shutil.which` cannot find them. Returns deduplicated candidate paths
-    (empty on Linux, where PATH-scan names above are the only option).
-    """
-    candidates = []
-    if sys.platform == "darwin":
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-    elif os.name == "nt":
-        bases = [
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ]
-        for base in bases:
-            if not base:
-                continue
-            candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
-            candidates.append(os.path.join(base, "Chromium", "Application", "chrome.exe"))
-    seen = set()
-    return [c for c in candidates if not (c in seen or seen.add(c))]
+    semester = await select_semester(
+        tab, common_urls['attendance_dashboard_url'], section_label
+    )
+    entries = await extract_dashboard(tab, section_label)
+    return entries, semester
 
 def get_chrome_executable():
     """
     Resolve the exact Chrome binary to launch.
 
-    Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan,
-    then well-known per-platform install paths. Passed to nodriver as
-    browser_executable_path so the launched browser always matches what was
-    detected (nodriver has no chromedriver to version-match).
+    Thin wrapper over browser_lookup.get_chrome_executable() - the single source
+    of truth shared with scripts/setup.py and scripts/check_setup.py - supplying
+    this run's CHROME_BINARY_PATH override. Precedence: CHROME_BINARY_PATH env
+    override, then a deterministic PATH scan, then well-known per-platform
+    install paths. Passed to nodriver as browser_executable_path so the launched
+    browser always matches what was detected.
     """
-    if CHROME_BINARY_PATH:
-        if os.path.isfile(CHROME_BINARY_PATH):
-            logger.info("Using Chrome binary from CHROME_BINARY_PATH: %s", CHROME_BINARY_PATH)
-            return CHROME_BINARY_PATH
-        logger.warning("CHROME_BINARY_PATH set but not found: %s", CHROME_BINARY_PATH)
-    for binary in CHROME_BINARY_NAMES:
-        path = shutil.which(binary)
-        if path:
-            return path
-    for candidate in _platform_chrome_candidates():
-        if os.path.isfile(candidate):
-            logger.info("Found Chrome binary at well-known path: %s", candidate)
-            return candidate
-    return None
+    return resolve_chrome_executable(CHROME_BINARY_PATH)
 
 
 async def launch_browser():
@@ -740,8 +860,12 @@ async def scrape_account_with_retries(profile, common_urls):
     """
     Runs the full scraping workflow for one account, retrying transient
     failures (CDP node races, network blips, timeouts) with a fresh browser
-    session per attempt. Returns the collected dashboard entries on success
-    and re-raises the last error once all attempts are exhausted.
+    session per attempt.
+
+    Returns:
+        tuple(list, str): the collected dashboard entries and the selected
+        semester label. Re-raises the last error once all attempts are
+        exhausted.
     """
     last_exc = None
     for attempt in range(1, ACCOUNT_RETRY_ATTEMPTS + 1):
@@ -784,14 +908,32 @@ async def scrape_account_with_retries(profile, common_urls):
                 except Exception:
                     logger.exception("Failed to stop browser for %s.", profile['id'])
                 logger.info("Session closed for %s.", profile['id'])
-    raise last_exc
+    raise last_exc or RuntimeError("no scrape attempts were made")
+
+
+def build_run_output(entries, account_summaries, primary_semester, generated_at=None):
+    """
+    Builds the run manifest written to FINAL_ROUTINE_JSON_FILENAME.
+
+    The manifest carries provenance (when, from which semester, which accounts)
+    so the formatter can refuse to publish stale data and so a "wrong semester"
+    run is diagnosable after the fact.
+    """
+    return {
+        "generated_at": generated_at or datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "semester": primary_semester,
+        "accounts": account_summaries,
+        "entries": entries,
+    }
 
 
 # [Main Workflow]
 
 async def main():
     logger.info("Executing scraper workflow...")
-    
+
     credentials = load_credentials(CREDENTIALS_FILE)
     if not credentials:
         logger.error(
@@ -801,9 +943,16 @@ async def main():
         )
         sys.exit(1)
 
+    # Drop the previous run's output now: if this run dies before writing (kill,
+    # disk full, timeout), the formatter must not find last week's data and
+    # republish it as this week's routine.
+    invalidate_previous_output(FORMATTED_OUTPUT_DIR)
+
     teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
     all_collected_data = []
     failed_accounts = []
+    account_summaries = []
+    primary_semester = None
 
     common_urls = {
         "login_url": credentials["login_url"],
@@ -812,14 +961,25 @@ async def main():
 
     for profile in credentials["users"]:
         try:
-            user_data = await scrape_account_with_retries(profile, common_urls)
-            all_collected_data.extend(user_data)
+            user_data, semester = await scrape_account_with_retries(profile, common_urls)
         except Exception as e:
             logger.error(
                 "Account %s failed after %d attempt(s): %s",
                 profile['id'], ACCOUNT_RETRY_ATTEMPTS, e,
             )
             failed_accounts.append(profile['id'])
+            continue
+
+        all_collected_data.extend(user_data)
+        account_summaries.append({
+            "id": profile["id"],
+            "section_label": profile.get("section_label"),
+            "role": profile.get("role"),
+            "semester": semester,
+            "entries": len(user_data),
+        })
+        if profile.get("role") == "primary":
+            primary_semester = semester
 
     if failed_accounts:
         logger.error(
@@ -833,20 +993,65 @@ async def main():
         sys.exit(1)
 
     logger.info("--- Processing Combined Results ---")
-    primary_section = credentials["users"][0]["section_label"]
-    secondary_section = credentials["users"][1]["section_label"] if len(credentials["users"]) > 1 else None
+    primary_section = next(
+        user["section_label"]
+        for user in credentials["users"]
+        if user.get("role") == "primary"
+    )
+    lab_sections = [
+        user["section_label"]
+        for user in credentials["users"]
+        if user.get("role") == "lab_merge"
+    ]
 
-    unique_routine = build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details)
+    unique_routine = build_final_routine(all_collected_data, primary_section, lab_sections, teacher_details)
 
-    if unique_routine:
-        logger.info("Exporting %d unique entries.", len(unique_routine))
-        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
-                          fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"])
-        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
-    else:
-        logger.warning("No valid routine entries filtered.")
+    if not unique_routine:
+        logger.error(
+            "No valid routine entries left after merging: %d raw entries collected, "
+            "primary section '%s', lab section(s) %s. If the portal has published the "
+            "schedule, check the raw panel HTML in %s.",
+            len(all_collected_data),
+            primary_section,
+            lab_sections or "none",
+            TMP_OUTPUT_DIR,
+        )
         sys.exit(1)
 
+    logger.info("Exporting %d unique entries.", len(unique_routine))
+    if not save_data_to_file(
+        unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
+        fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"],
+    ):
+        # The CSV is a human-readable convenience artifact; the JSON is the
+        # contract the formatter consumes, so a CSV failure is not fatal.
+        logger.warning("Could not write %s (non-fatal).", FINAL_ROUTINE_CSV_FILENAME)
+
+    run_output = build_run_output(
+        unique_routine, account_summaries, primary_semester
+    )
+    if not save_data_to_file(
+        run_output, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json"
+    ):
+        logger.error(
+            "Failed to write %s. Aborting so the formatter cannot re-sync stale data.",
+            FINAL_ROUTINE_JSON_FILENAME,
+        )
+        sys.exit(1)
+
+    # One line that answers "did last night's run do anything?" from the
+    # journal, without having to open the sheet or the JSON file.
+    logger.info(
+        "Run summary: semester=%s | accounts=[%s] | %d scraped -> %d published | %s",
+        primary_semester,
+        ", ".join(
+            f"{a['id']} ({a['role']}, section {a['section_label']}): {a['entries']}"
+            for a in account_summaries
+        ),
+        len(all_collected_data),
+        len(unique_routine),
+        os.path.join(FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME),
+    )
     logger.info("Scraper workflow finished.")
 
 if __name__ == "__main__":

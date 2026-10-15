@@ -43,6 +43,13 @@ fi
 if [ $? -eq 0 ]; then
     echo "Scraper finished. Starting gsheet formatter..."
     "$PYTHON_EXEC" gsheet_formatter.py
+    # Propagate the formatter's status: a non-zero exit means the spreadsheet
+    # was NOT updated (bad/absent data, auth failure, write failure, or the
+    # Apps Script trigger failed), which must not look like a successful run.
+    if [ $? -ne 0 ]; then
+        echo "Formatter failed. Spreadsheet not updated."
+        exit 1
+    fi
 else
     echo "Scraper failed. Skipping formatter."
     exit 1

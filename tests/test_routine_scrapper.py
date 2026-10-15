@@ -2,12 +2,9 @@ import json
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import routine_scrapper as rs
-
 
 # ----------------------------- Sample HTML fixture -----------------------------
 
@@ -57,7 +54,10 @@ def test_load_credentials_valid(tmp_path):
     }
     path = tmp_path / "creds.json"
     path.write_text(json.dumps(creds), encoding="utf-8")
-    assert rs.load_credentials(str(path)) == creds
+    loaded = rs.load_credentials(str(path))
+    assert loaded["login_url"] == creds["login_url"]
+    assert loaded["attendance_dashboard_url"] == creds["attendance_dashboard_url"]
+    assert loaded["users"] == [dict(creds["users"][0], role="primary")]
 
 
 def test_load_credentials_missing_top_keys(tmp_path):
@@ -78,6 +78,72 @@ def test_load_credentials_empty_users(tmp_path):
 def test_load_credentials_invalid_json(tmp_path):
     path = tmp_path / "creds.json"
     path.write_text("not json", encoding="utf-8")
+    assert rs.load_credentials(str(path)) is None
+
+
+# ----------------------------- resolve_user_roles -----------------------------
+
+def _user(uid, section="B1", **extra):
+    return {"id": uid, "username": "u", "password": "p", "section_label": section, **extra}
+
+
+def test_resolve_user_roles_defaults_to_positional():
+    users, error = rs.resolve_user_roles([_user(1), _user(2)])
+    assert error is None
+    assert [u["role"] for u in users] == ["primary", "lab_merge"]
+
+
+def test_resolve_user_roles_honours_explicit_roles():
+    users, error = rs.resolve_user_roles([
+        _user(1, role="lab_merge"),
+        _user(2, role="primary"),
+    ])
+    assert error is None
+    assert [u["role"] for u in users] == ["lab_merge", "primary"]
+
+
+def test_resolve_user_roles_supports_several_lab_accounts():
+    users, error = rs.resolve_user_roles([
+        _user(1, "B2", role="primary"),
+        _user(2, "B1", role="lab_merge"),
+        _user(3, "B3", role="lab_merge"),
+    ])
+    assert error is None
+    assert [u["section_label"] for u in users] == ["B2", "B1", "B3"]
+
+
+def test_resolve_user_roles_rejects_unknown_role():
+    users, error = rs.resolve_user_roles([_user(1, role="boss")])
+    assert users is None
+    assert "unknown role" in error
+
+
+def test_resolve_user_roles_rejects_two_primaries():
+    users, error = rs.resolve_user_roles([_user(1), _user(2, role="primary")])
+    assert users is None
+    assert "exactly one account must have role 'primary'" in error
+
+
+def test_load_credentials_fills_roles(tmp_path):
+    creds = {
+        "users": [_user(1, "B2"), _user(2, "B1")],
+        "login_url": "x",
+        "attendance_dashboard_url": "y",
+    }
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(creds), encoding="utf-8")
+    loaded = rs.load_credentials(str(path))
+    assert [u["role"] for u in loaded["users"]] == ["primary", "lab_merge"]
+
+
+def test_load_credentials_rejects_bad_roles(tmp_path):
+    creds = {
+        "users": [_user(1, role="primary"), _user(2, role="primary")],
+        "login_url": "x",
+        "attendance_dashboard_url": "y",
+    }
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(creds), encoding="utf-8")
     assert rs.load_credentials(str(path)) is None
 
 
@@ -143,7 +209,7 @@ def test_parse_dashboard_row_without_day_keeps_other_slot():
 
 def test_save_csv(tmp_path):
     data = [{"A": 1, "B": 2}, {"A": 3, "B": 4}]
-    rs.save_data_to_file(data, str(tmp_path), "out.csv", "csv", fieldnames=["A", "B"])
+    assert rs.save_data_to_file(data, str(tmp_path), "out.csv", "csv", fieldnames=["A", "B"]) is True
     out = tmp_path / "out.csv"
     assert out.exists()
     assert out.read_text(encoding="utf-8").splitlines()[0] == "A,B"
@@ -151,13 +217,59 @@ def test_save_csv(tmp_path):
 
 def test_save_json(tmp_path):
     data = [{"A": 1, "B": 2}]
-    rs.save_data_to_file(data, str(tmp_path), "out.json", "json")
+    assert rs.save_data_to_file(data, str(tmp_path), "out.json", "json") is True
     assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8")) == data
 
 
+def test_save_leaves_no_temporary_file(tmp_path):
+    rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.json", "json")
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_save_empty_data_no_file(tmp_path):
-    rs.save_data_to_file([], str(tmp_path), "none.csv", "csv")
+    assert rs.save_data_to_file([], str(tmp_path), "none.csv", "csv") is False
     assert not (tmp_path / "none.csv").exists()
+
+
+def test_save_reports_failure_when_target_unwritable(tmp_path):
+    # A file where the output directory should be makes makedirs fail.
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    assert rs.save_data_to_file([{"A": 1}], str(blocker), "out.json", "json") is False
+
+
+def test_save_reports_failure_and_keeps_previous_file(tmp_path):
+    good = tmp_path / "out.json"
+    rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.json", "json")
+    original = good.read_text(encoding="utf-8")
+
+    class Unserializable:
+        pass
+
+    assert rs.save_data_to_file(
+        {"bad": Unserializable()}, str(tmp_path), "out.json", "json"
+    ) is False
+    assert good.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_unsupported_file_type(tmp_path):
+    assert rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.txt", "xml") is False
+
+
+# ----------------------------- invalidate_previous_output -----------------------------
+
+def test_invalidate_previous_output_removes_files(tmp_path):
+    (tmp_path / rs.FINAL_ROUTINE_JSON_FILENAME).write_text("{}", encoding="utf-8")
+    (tmp_path / rs.FINAL_ROUTINE_CSV_FILENAME).write_text("x", encoding="utf-8")
+    rs.invalidate_previous_output(str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalidate_previous_output_tolerates_missing_files(tmp_path):
+    rs.invalidate_previous_output(str(tmp_path))  # must not raise
+    assert list(tmp_path.iterdir()) == []
+
 
 
 # ----------------------------- _schedule_entry -----------------------------
@@ -257,6 +369,27 @@ def test_build_final_routine_no_secondary():
     assert len(final) == 1
 
 
+def test_build_final_routine_lab_match_needs_a_word_boundary():
+    # "Collaborative"/"Laboratory" merely contain the letters "lab"; only a
+    # standalone "Lab" token identifies a lab course from the secondary account.
+    data = [
+        _item("CSE-3201", "Operating Systems", "B1", "Sun"),
+        _item("CSE-4999", "Collaborative Computing", "B2", "Sun"),
+        _item("CSE-4998", "Laboratory Techniques", "B2", "Mon"),
+        _item("CSE-3212", "Operating Systems Lab", "B2", "Wed"),
+        _item("CSE-3213", "Data Structures LABORATORY", "B2", "Thu"),
+    ]
+    final = rs.build_final_routine(data, "B1", "B2", {})
+    codes = {e["CourseCode"] for e in final}
+    assert codes == {"CSE-3201", "CSE-3212"}
+
+
+def test_build_final_routine_lab_match_is_case_insensitive():
+    data = [_item("CSE-3212", "operating systems lab", "B2", "Wed")]
+    final = rs.build_final_routine(data, "B1", "B2", {})
+    assert [e["CourseCode"] for e in final] == ["CSE-3212"]
+
+
 # ----------------------------- missing_teacher_initials -----------------------------
 
 def test_missing_teacher_initials_returns_unknowns():
@@ -299,72 +432,30 @@ def test_build_final_routine_no_warning_when_all_known(caplog):
 
 
 # ----------------------------- Chrome binary resolution -----------------------------
+# The detection logic itself lives in browser_lookup.py (tests/test_browser_lookup.py);
+# these check that the scraper wires its CHROME_BINARY_PATH override through.
 
-def test_get_chrome_executable_uses_env_override(tmp_path, monkeypatch):
-    fake = tmp_path / "chrome"
-    fake.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", str(fake))
-    assert rs.get_chrome_executable() == str(fake)
+def test_get_chrome_executable_passes_config_override(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_resolve(env_override=None):
+        captured["env_override"] = env_override
+        return "resolved"
+
+    monkeypatch.setattr(rs, "resolve_chrome_executable", fake_resolve)
+    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", "/opt/chrome")
+    assert rs.get_chrome_executable() == "resolved"
+    assert captured["env_override"] == "/opt/chrome"
 
 
-def test_get_chrome_executable_env_override_missing_falls_back(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", "/nonexistent/chrome")
-    monkeypatch.setattr(rs.shutil, "which", lambda name: "/usr/bin/" + name)
-    assert rs.get_chrome_executable() == "/usr/bin/google-chrome-stable"
+def test_get_chrome_executable_without_override(monkeypatch):
+    captured = {}
 
+    def fake_resolve(env_override=None):
+        captured["env_override"] = env_override
+        return "resolved"
 
-def test_get_chrome_executable_prefers_google_chrome_stable(monkeypatch):
+    monkeypatch.setattr(rs, "resolve_chrome_executable", fake_resolve)
     monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    available = {"chromium": "/usr/bin/chromium", "google-chrome-stable": "/usr/bin/google-chrome-stable"}
-    monkeypatch.setattr(rs.shutil, "which", lambda name: available.get(name))
-    assert rs.get_chrome_executable() == "/usr/bin/google-chrome-stable"
-
-
-def test_get_chrome_executable_no_binary(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
-    assert rs.get_chrome_executable() is None
-
-
-def test_platform_chrome_candidates_macos(monkeypatch):
-    monkeypatch.setattr(rs.sys, "platform", "darwin")
-    candidates = rs._platform_chrome_candidates()
-    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
-    assert "/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
-
-
-def test_platform_chrome_candidates_windows(monkeypatch):
-    monkeypatch.setattr(rs.os, "name", "nt")
-    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
-    candidates = rs._platform_chrome_candidates()
-    assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
-    assert os.path.join("C:\\Users\\u\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe") in candidates
-
-
-def test_platform_chrome_candidates_linux_empty(monkeypatch):
-    monkeypatch.setattr(rs.sys, "platform", "linux")
-    assert rs._platform_chrome_candidates() == []
-
-
-def test_platform_chrome_candidates_windows_dedupes(monkeypatch):
-    monkeypatch.setattr(rs.os, "name", "nt")
-    monkeypatch.delenv("ProgramW6432", raising=False)
-    monkeypatch.delenv("LOCALAPPDATA", raising=False)
-    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("ProgramW6432", "C:\\Program Files")
-    candidates = rs._platform_chrome_candidates()
-    expected = os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")
-    assert candidates.count(expected) == 1
-
-
-def test_get_chrome_executable_uses_well_known_path(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
-    fake = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    monkeypatch.setattr(rs, "_platform_chrome_candidates", lambda: [fake])
-    monkeypatch.setattr(rs.os.path, "isfile", lambda p: p == fake)
-    assert rs.get_chrome_executable() == fake
+    assert rs.get_chrome_executable() == "resolved"
+    assert captured["env_override"] is None

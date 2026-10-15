@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scripts.setup as s
 
-
 # ----------------------------- scaffold_files -----------------------------
 
 def _write(root, rel, content):
@@ -83,6 +82,48 @@ def test_validate_credentials_json_user_missing_keys(tmp_path):
     assert any("users[0]" in e for e in errors)
 
 
+def test_validate_credentials_json_accepts_valid_roles(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [
+            {"id": "a", "username": "u", "password": "p", "section_label": "A1", "role": "primary"},
+            {"id": "b", "username": "u", "password": "p", "section_label": "A2", "role": "lab_merge"},
+        ],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert ok, errors
+
+
+def test_validate_credentials_json_rejects_unknown_role(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [{"id": "a", "username": "u", "password": "p",
+                   "section_label": "A1", "role": "boss"}],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert not ok
+    assert any("unknown role" in e for e in errors)
+
+
+def test_validate_credentials_json_rejects_two_primaries(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [
+            {"id": "a", "username": "u", "password": "p", "section_label": "A1", "role": "primary"},
+            {"id": "b", "username": "u", "password": "p", "section_label": "A2", "role": "primary"},
+        ],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert not ok
+    assert any("at most one" in e for e in errors)
+
+
 # ----------------------------- validate_teacher_details -----------------------------
 
 def test_validate_teacher_details_absent_is_ok(tmp_path):
@@ -142,39 +183,55 @@ def test_validate_env_placeholder_id(tmp_path):
 
 # ----------------------------- find_browser -----------------------------
 
-def test_find_browser_returns_path_entry(monkeypatch):
-    def fake_which(name):
-        return "/usr/bin/%s" % name if name == "google-chrome" else None
-    monkeypatch.setattr(s.shutil, "which", fake_which)
-    assert s.find_browser() == "google-chrome"
+def test_find_browser_uses_shared_lookup(monkeypatch):
+    # setup must report exactly what the scraper would launch, so it delegates
+    # to browser_lookup and passes the configured CHROME_BINARY_PATH through.
+    captured = {}
+
+    def fake_lookup(env_override=None):
+        captured["env_override"] = env_override
+        return "/usr/bin/google-chrome-stable"
+
+    monkeypatch.setattr(s, "get_chrome_executable", fake_lookup)
+    monkeypatch.setattr(s, "CHROME_BINARY_PATH", "/opt/chrome")
+    assert s.find_browser() == "/usr/bin/google-chrome-stable"
+    assert captured["env_override"] == "/opt/chrome"
 
 
 def test_find_browser_none(monkeypatch):
-    monkeypatch.setattr(s.shutil, "which", lambda name: None)
+    monkeypatch.setattr(s, "get_chrome_executable", lambda env_override=None: None)
     assert s.find_browser() is None
 
 
-def test_find_browser_macos_app_bundle(monkeypatch):
-    monkeypatch.setattr(s.shutil, "which", lambda name: None)
-    fake = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    monkeypatch.setattr(s, "_platform_chrome_candidates", lambda: [fake])
-    monkeypatch.setattr(s.os.path, "exists", lambda p: p == fake)
-    assert s.find_browser() == fake
+# ----------------------------- secret permissions -----------------------------
+
+def test_scaffold_creates_private_files(tmp_path):
+    if os.name == "nt":
+        return  # POSIX permission bits are not meaningful on Windows
+    for template_rel in s.TEMPLATE_MAP.values():
+        _write(tmp_path, template_rel, "{}")
+    s.scaffold_files(str(tmp_path))
+    for real_rel in s.TEMPLATE_MAP:
+        mode = os.stat(os.path.join(tmp_path, real_rel)).st_mode & 0o777
+        assert mode == s.PRIVATE_FILE_MODE, (real_rel, oct(mode))
 
 
-def test_setup_platform_candidates_macos(monkeypatch):
-    monkeypatch.setattr(s.sys, "platform", "darwin")
-    candidates = s._platform_chrome_candidates()
-    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
-    assert "/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
+def test_check_secret_permissions_flags_world_readable(tmp_path):
+    if os.name == "nt":
+        return
+    _write(tmp_path, "configs_to_edit/ucam_login_credentials.json", "{}")
+    os.chmod(os.path.join(tmp_path, "configs_to_edit/ucam_login_credentials.json"), 0o644)
+    warnings = s.check_secret_permissions(str(tmp_path))
+    assert any("ucam_login_credentials.json" in w for w in warnings)
 
 
-def test_setup_platform_candidates_windows(monkeypatch):
-    monkeypatch.setattr(s.os, "name", "nt")
-    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
-    candidates = s._platform_chrome_candidates()
-    assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
-    assert os.path.join("C:\\Users\\u\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe") in candidates
+def test_check_secret_permissions_quiet_when_private(tmp_path):
+    if os.name == "nt":
+        return
+    _write(tmp_path, ".env", "APP_SCRIPT_ID=x")
+    os.chmod(os.path.join(tmp_path, ".env"), 0o600)
+    assert s.check_secret_permissions(str(tmp_path)) == []
+
+
+def test_check_secret_permissions_ignores_absent_files(tmp_path):
+    assert s.check_secret_permissions(str(tmp_path)) == []

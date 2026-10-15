@@ -78,6 +78,10 @@ In the [Google Cloud Console](https://console.cloud.google.com/), create a proje
 5. Click **Deploy**, then **copy the Script ID** from the deployment dialog.
 6. Save it as `APP_SCRIPT_ID` in your `.env` (see [Phase B](#phase-b--local-setup)).
 
+> **Redeploy after editing `Code.gs`:** a deployment pins a version, so changes to the file do nothing until you go to **Deploy > Manage deployments**, click the edit (pencil) icon, set **Version: New version**, and click **Deploy**.
+>
+> **Optional live sorting:** the Python pipeline calls `triggerSortFromPython()` itself, so no trigger is needed. If you also want the sheet to re-sort while you edit `backend` by hand, add an installable trigger (**Triggers > Add trigger**, function `sortBackendData`, event source *From spreadsheet*, event type *On edit*).
+
 ---
 
 ## Phase B — Local Setup
@@ -111,11 +115,21 @@ This copies the template files to their real names if they're missing:
 
 | File | What it is |
 |------|-----------|
-| `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (1 account, or 2 if you merge a friend's lab schedule) |
+| `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (one `primary` account, plus optionally more `lab_merge` accounts to merge lab schedules) |
 | `configs_to_edit/teacher_contact_details.json` | Optional teacher contact lookup by initials |
 | `.env` | Runtime settings: spreadsheet name, target tab, Apps Script ID |
 
 It will **not** create `google_cloud_keys/*.json` for you (those must be downloaded from Google Cloud in Phase A), but it will tell you if they're missing.
+
+The files it creates — and the Google keys once you drop them in — hold live credentials (your UCAM password, a Google service-account key, an OAuth refresh token), so keep them owner-only:
+
+```bash
+chmod 600 .env token.pickle configs_to_edit/ucam_login_credentials.json \
+  configs_to_edit/teacher_contact_details.json \
+  google_cloud_keys/service_account_key.json google_cloud_keys/oauth_client_secret.json
+```
+
+`scripts/setup.py` creates the files it scaffolds with mode `600` and warns at the end if any credential file is readable beyond its owner (the default umask would leave them world-readable).
 
 ### B4. Fill in the configuration files
 
@@ -128,7 +142,8 @@ It will **not** create `google_cloud_keys/*.json` for you (those must be downloa
       "id": "my_primary_account",
       "username": "YOUR_UCAM_ID",
       "password": "YOUR_UCAM_PASSWORD",
-      "section_label": "A1"
+      "section_label": "A1",
+      "role": "primary"
     }
   ],
   "login_url": "https://ucam.niter.edu.bd/Security/Login.aspx",
@@ -136,7 +151,8 @@ It will **not** create `google_cloud_keys/*.json` for you (those must be downloa
 }
 ```
 
-- **One account is enough.** Add a second `users[]` entry only if you want to merge a lab schedule from another student's account (that second account's non-lab courses are ignored).
+- **One account is enough.** Add further `users[]` entries only if you want to merge lab schedules from other students' accounts (their non-lab courses are ignored).
+- **`role` is optional but recommended:** exactly one account must be `"primary"` (your own section — keeps every course); every other account should be `"lab_merge"` (contributes only its lab courses). Leave `role` out entirely and the old positional behaviour applies: the first account is the primary and the rest are lab_merge.
 - The two URLs are for the NITER portal and usually need no changes.
 
 **`configs_to_edit/teacher_contact_details.json`** — optional. Keyed by the teacher initials that appear in the portal (e.g. `"SS"`), mapping to `FullName` / `Phone` / `Email`. Leave the file empty (`{}`) if you don't need it.
@@ -149,6 +165,8 @@ SPREADSHEET_NAME=CSE-03_B_ClassRoutine
 TARGET_SHEET_NAME=backend
 APP_SCRIPT_ID=your_script_id_from_phase_A6
 LOG_LEVEL=INFO
+# Optional: refuse to publish scraper output older than N hours (default 48).
+#MAX_DATA_AGE_HOURS=48
 ```
 
 > `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you also rename the tabs in `apps_script/Code.gs`.
@@ -188,7 +206,8 @@ This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routin
 
 - [ ] `backend` tab contains the raw routine rows.
 - [ ] `NewMain` tab contains the sorted routine, and headers (if freshly created) at `B3:I3`.
-- [ ] `NewMain` shows a current **Last Updated** timestamp (bottom-right area).
+- [ ] `NewMain` shows a current **Last Updated** timestamp *below* the last routine row (the footer is written two rows under the data, column B) — not at a fixed `I24`.
+- [ ] Both stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without re-sorting) on missing/stale/undated data, an auth failure, a failed `backend` write, or a failed Apps Script trigger. Check the log line above the failure.
 
 ---
 
@@ -266,9 +285,12 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 | Scraper aborts with **"No Chrome binary found"** | Chrome/Chromium not installed or not on PATH | Install Chrome or Chromium, or set `CHROME_BINARY_PATH` in `.env` to a specific binary. |
 | `scripts/run_routine.sh` exits immediately with **xvfb-run not installed** | The Linux runner now requires a virtual X display | Install the Xvfb package for your distro (the message prints the exact command). |
 | Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
-| `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
+| Formatter refuses to publish and the log says the data is **stale** or has **no usable `generated_at`** | The scraper's output is directly from an older run (or is a pre-manifest file) | Re-run `routine_scrapper.py`. If you just upgraded and the JSON predates the run manifest, the formatter will refuse it until a fresh scrape replaces it. `MAX_DATA_AGE_HOURS=0` in `.env` disables the check. |
+| Scraper aborts with **"No valid routine entries left after merging"** | Portal markup changed, or the semester isn't published yet | If the schedule *is* live, inspect the raw panel HTML the scraper dumped to `tmp/` (the log line names the exact file). |
+| `No valid routine entries` (older wording) / `backend` is empty | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
 | A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
-| Formatter warns `APP_SCRIPT_ID is not configured` | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
+| Formatter fails with **`APP_SCRIPT_ID is not configured`** | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
+| **Last Updated** stamp is missing or sits next to the data | `Code.gs` was edited but the deployment was not updated (a deployment pins a version) | **Deploy > Manage deployments >** edit **> Version: New version**. |
 
 ---
 
@@ -276,7 +298,7 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 
 You only need to repeat:
 
-1. Clone + venv + `pip install -r requirements.txt`.
+1. Clone + venv + `pip install -r requirements.txt` (add `requirements-dev.txt` if you want the tests/linter and `scripts/verify.sh`).
 2. Install Chrome/Chromium (+ Xvfb on Linux for invisible scheduled runs).
 3. Copy these gitignored files from your old machine:
    - `configs_to_edit/ucam_login_credentials.json`
@@ -285,6 +307,8 @@ You only need to repeat:
    - `google_cloud_keys/oauth_client_secret.json`
    - `.env`
    - `token.pickle` (or run the formatter once interactively to regenerate it)
+
+   Then lock them down: `chmod 600 .env token.pickle configs_to_edit/*.json google_cloud_keys/*.json`.
 4. Optionally reinstall automation (Phase D): systemd timer (Linux), Task Scheduler (Windows), or the launchd agent (macOS).
 
 Nothing on the Google side changes — the same spreadsheet, service account, OAuth client, and Apps Script deployment are reused.

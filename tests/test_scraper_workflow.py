@@ -248,6 +248,25 @@ async def test_extract_dashboard_no_html_returns_empty(monkeypatch):
     assert await rs.extract_dashboard(tab, "B1") == []
 
 
+async def test_extract_dashboard_dumps_panel_html_when_nothing_parses(tmp_path, monkeypatch):
+    monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
+    markup = (
+        f'<table id="{rs.COURSE_TABLE_ID}">'
+        "<tr><th>Course Code</th></tr>"
+        "<tr><td>unknown layout</td></tr>"
+        "</table>"
+    )
+    tab = FakeTab()
+    tab._elements[TABLE_CSS] = FakeElement()
+    tab.eval_map[rs._dashboard_html_js()] = markup
+
+    assert await rs.extract_dashboard(tab, "B1") == []
+
+    dump = tmp_path / rs.ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL.format(section="B1")
+    assert dump.exists()
+    assert dump.read_text(encoding="utf-8") == markup
+
+
 # ----------------------------- scrape_dashboard_for_user -----------------------------
 
 async def test_scrape_dashboard_for_user_runs_full_flow(tmp_path, monkeypatch):
@@ -264,8 +283,9 @@ async def test_scrape_dashboard_for_user_runs_full_flow(tmp_path, monkeypatch):
     creds = {"id": 1, "username": "u", "password": "p", "section_label": "B1"}
     urls = {"login_url": "https://login", "attendance_dashboard_url": "https://dash"}
 
-    entries = await rs.scrape_dashboard_for_user(tab, creds, urls)
+    entries, semester = await rs.scrape_dashboard_for_user(tab, creds, urls)
     assert len(entries) == 1
+    assert semester == "Fall 2024"
     assert tab.gets[0] == "https://www.google.com"
     assert "https://login" in tab.gets
     assert tab.gets[-1] == "https://dash"
@@ -308,7 +328,7 @@ async def test_scrape_account_with_retries_succeeds_first_attempt(monkeypatch):
     entries = [{"CourseCode": "CSE-3201"}]
 
     async def fake_scrape(tab, profile, urls):
-        return entries
+        return entries, "Fall 2024"
 
     monkeypatch.setattr(rs, "launch_browser", fake_launch)
     monkeypatch.setattr(rs, "scrape_dashboard_for_user", fake_scrape)
@@ -316,7 +336,7 @@ async def test_scrape_account_with_retries_succeeds_first_attempt(monkeypatch):
     profile = {"id": 1, "section_label": "B1"}
     urls = {"login_url": "x", "attendance_dashboard_url": "y"}
     result = await rs.scrape_account_with_retries(profile, urls)
-    assert result == entries
+    assert result == (entries, "Fall 2024")
     assert len(launches) == 1
 
 
@@ -333,7 +353,7 @@ async def test_scrape_account_with_retries_retries_then_succeeds(monkeypatch, tm
         calls.append(1)
         if len(calls) == 1:
             raise rs.nd.ProtocolException("Could not find node with given id")
-        return [{"CourseCode": "CSE-3201"}]
+        return [{"CourseCode": "CSE-3201"}], "Fall 2024"
 
     monkeypatch.setattr(rs, "launch_browser", fake_launch)
     monkeypatch.setattr(rs, "scrape_dashboard_for_user", fake_scrape)
@@ -341,7 +361,7 @@ async def test_scrape_account_with_retries_retries_then_succeeds(monkeypatch, tm
     profile = {"id": 1, "section_label": "B1"}
     urls = {"login_url": "x", "attendance_dashboard_url": "y"}
     result = await rs.scrape_account_with_retries(profile, urls)
-    assert result == [{"CourseCode": "CSE-3201"}]
+    assert result == ([{"CourseCode": "CSE-3201"}], "Fall 2024")
     assert len(calls) == 2
     assert len(launches) == 2
 
@@ -373,7 +393,7 @@ async def test_scrape_account_with_retries_exhausts_attempts(monkeypatch, tmp_pa
 
 def _minimal_creds():
     return {
-        "users": [{"id": 1, "section_label": "B2"}],
+        "users": [{"id": 1, "section_label": "B2", "role": "primary"}],
         "login_url": "https://login",
         "attendance_dashboard_url": "https://dash",
     }
@@ -411,11 +431,80 @@ def test_main_exports_when_all_accounts_succeed(monkeypatch, tmp_path):
     }
 
     async def fake_retries(profile, urls):
-        return [item]
+        return [item], "Fall 2024"
 
     monkeypatch.setattr(rs, "scrape_account_with_retries", fake_retries)
 
     asyncio.run(rs.main())
-    assert (tmp_path / "final_combined_routine.json").exists()
     assert (tmp_path / "final_combined_routine.csv").exists()
+
+    payload = json.loads((tmp_path / "final_combined_routine.json").read_text(encoding="utf-8"))
+    assert payload["semester"] == "Fall 2024"
+    assert payload["generated_at"].endswith("Z")
+    assert payload["accounts"] == [
+        {"id": 1, "section_label": "B2", "role": "primary",
+         "semester": "Fall 2024", "entries": 1}
+    ]
+    assert len(payload["entries"]) == 1
+    assert payload["entries"][0]["CourseCode"] == "CSE-3201"
+
+
+def test_main_invalidates_previous_output_before_scraping(monkeypatch, tmp_path):
+    # tests/conftest.py redirects FORMATTED_OUTPUT_DIR to tmp_path; this test
+    # pins it explicitly because it asserts on that exact directory.
+    monkeypatch.setattr(rs, "FORMATTED_OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setattr(rs, "load_credentials", lambda path: _minimal_creds())
+    monkeypatch.setattr(rs, "load_teacher_details_from_file", lambda path: {})
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    stale = out_dir / rs.FINAL_ROUTINE_JSON_FILENAME
+    stale.write_text(json.dumps([{"CourseCode": "STALE"}]), encoding="utf-8")
+
+    seen = {}
+
+    async def fake_retries(profile, urls):
+        seen["json_present_during_scrape"] = stale.exists()
+        return [], "Fall 2024"
+
+    monkeypatch.setattr(rs, "scrape_account_with_retries", fake_retries)
+
+    with pytest.raises(SystemExit):
+        asyncio.run(rs.main())  # no data collected -> abort
+
+    assert seen["json_present_during_scrape"] is False
+
+
+def test_main_exits_nonzero_when_json_write_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(rs, "FORMATTED_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(rs, "load_credentials", lambda path: _minimal_creds())
+    monkeypatch.setattr(rs, "load_teacher_details_from_file", lambda path: {})
+
+    item = {
+        "UserScrapedSection": "B2",
+        "CourseCode": "CSE-3201",
+        "CourseTitle": "Operating Systems",
+        "CourseSection": "B",
+        "ScheduleOne_Day": "Sun",
+        "ScheduleOne_Time": "11:0 - 12:15",
+        "ScheduleOne_Room": "120",
+        "ScheduleOne_TeacherInitial": "SS",
+    }
+
+    async def fake_retries(profile, urls):
+        return [item], "Fall 2024"
+
+    real_save = rs.save_data_to_file
+
+    def failing_json_save(data, output_dir, filename, file_type="csv", fieldnames=None):
+        if file_type == "json":
+            return False
+        return real_save(data, output_dir, filename, file_type, fieldnames)
+
+    monkeypatch.setattr(rs, "scrape_account_with_retries", fake_retries)
+    monkeypatch.setattr(rs, "save_data_to_file", failing_json_save)
+
+    with pytest.raises(SystemExit) as exc:
+        asyncio.run(rs.main())
+    assert exc.value.code == 1
 
