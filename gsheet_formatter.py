@@ -18,6 +18,11 @@ from config import (
     TARGET_SHEET_NAME,
     setup_logging,
 )
+from routine_format import (
+    SHEET_HEADERS,
+    build_sheet_data,
+    contact_column_letter,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -26,12 +31,6 @@ logger.info("gsheet_formatter.py starting...")
 # [Configuration]
 NEW_MAIN_SHEET_NAME = 'NewMain'
 FUNCTION_NAME = 'triggerSortFromPython'
-
-# 8-column output headers
-SHEET_HEADERS = [
-    "Course", "Course Title", "Sect", "Day", "Room", "Time Slot", "Teacher", "Teacher Phone and Email"
-]
-CONTACT_COLUMN_HEADER = "Teacher Phone and Email"
 
 # [Path Constants]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -194,48 +193,6 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_hea
         logger.error("Error accessing worksheet '%s': %s", sheet_name, e)
         return None
     return worksheet
-
-
-def combine_contact_info(phone, email):
-    """
-    Combines teacher phone and email into a single cell value.
-    """
-    if phone and email:
-        return f"{phone}\n{email}"
-    return phone or email
-
-
-def build_sheet_data(data_to_write):
-    """
-    Converts routine entry dicts into the 2D list expected by the sheet
-    (header row followed by one row per entry). Returns None on bad input.
-    """
-    if not isinstance(data_to_write, list) or not data_to_write or not isinstance(data_to_write[0], dict):
-        return None
-
-    all_rows = [list(SHEET_HEADERS)]
-    for item in data_to_write:
-        all_rows.append([
-            item.get("CourseCode", ""),
-            item.get("CourseTitle", ""),
-            item.get("Section", ""),
-            item.get("Day", ""),
-            item.get("Room", ""),
-            item.get("TimeSlot", ""),
-            item.get("Teacher", ""),
-            combine_contact_info(item.get("TeacherPhone", ""), item.get("TeacherEmail", "")),
-        ])
-    return all_rows
-
-
-def contact_column_letter():
-    """
-    Returns the sheet column letter for the combined contact column (or "" if absent).
-    """
-    if CONTACT_COLUMN_HEADER not in SHEET_HEADERS:
-        return ""
-    col_idx = SHEET_HEADERS.index(CONTACT_COLUMN_HEADER) + 1
-    return gspread.utils.rowcol_to_a1(1, col_idx)[:-1]
 
 
 def write_data_to_sheet(worksheet, data_to_write):

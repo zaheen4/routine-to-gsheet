@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gsheet_formatter as gf
+import routine_format as rf
 
 # ----------------------------- credential path anchoring -----------------------------
 
@@ -98,25 +99,7 @@ def test_data_age_hours_old():
 
 
 
-# ----------------------------- combine_contact_info -----------------------------
-
-def test_combine_contact_info_both_present():
-    assert gf.combine_contact_info("123", "a@b.com") == "123\na@b.com"
-
-
-def test_combine_contact_info_phone_only():
-    assert gf.combine_contact_info("123", "") == "123"
-
-
-def test_combine_contact_info_email_only():
-    assert gf.combine_contact_info("", "a@b.com") == "a@b.com"
-
-
-def test_combine_contact_info_neither():
-    assert gf.combine_contact_info("", "") == ""
-
-
-# ----------------------------- build_sheet_data -----------------------------
+# ----------------------------- shared test entries -----------------------------
 
 def _entry(**overrides):
     base = {
@@ -132,34 +115,6 @@ def _entry(**overrides):
     }
     base.update(overrides)
     return base
-
-
-def test_build_sheet_data_header_and_rows():
-    rows = gf.build_sheet_data([_entry(), _entry(CourseCode="CSE-3212", Day="Wed")])
-    assert rows[0] == gf.SHEET_HEADERS
-    assert len(rows) == 3
-
-
-def test_build_sheet_data_merges_contact_column():
-    rows = gf.build_sheet_data([_entry()])
-    assert rows[1][7] == "123\na@b.com"
-
-
-def test_build_sheet_data_without_contact_uses_fallback():
-    rows = gf.build_sheet_data([_entry(TeacherPhone="", TeacherEmail="")])
-    assert rows[1][7] == ""
-
-
-def test_build_sheet_data_invalid_returns_none():
-    assert gf.build_sheet_data([]) is None
-    assert gf.build_sheet_data("not a list") is None
-    assert gf.build_sheet_data([["not", "dict"]]) is None
-
-
-# ----------------------------- contact_column_letter -----------------------------
-
-def test_contact_column_letter_is_h():
-    assert gf.contact_column_letter() == "H"
 
 
 # ----------------------------- get_or_create_worksheet -----------------------------
@@ -216,7 +171,7 @@ def test_get_or_create_worksheet_seeds_headers_on_create():
     ws = gf.get_or_create_worksheet(ss, "NewMain", rows=30, cols=10, seed_headers=True)
     assert ws is not None
     assert ("NewMain", 30, 10) in ss.created
-    assert ws.updated == ([gf.SHEET_HEADERS], 'B3')
+    assert ws.updated == ([rf.SHEET_HEADERS], 'B3')
     assert ws.formatted == ("B3:I3", {'textFormat': {'bold': True}})
 
 
@@ -237,7 +192,7 @@ def test_write_data_to_sheet_success():
     assert ok is True
     assert ws.clear_called is True
     assert ws.updated is not None
-    assert ws.updated[0][0] == gf.SHEET_HEADERS
+    assert ws.updated[0][0] == rf.SHEET_HEADERS
     assert ws.formatted == ("H2:H2", {"wrapStrategy": "WRAP"})
 
 
