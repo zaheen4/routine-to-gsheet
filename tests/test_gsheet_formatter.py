@@ -263,7 +263,7 @@ def test_write_data_to_sheet_invalid_returns_false():
 # ----------------------------- write_newmain_sheet -----------------------------
 
 _STAMP_NOW = datetime(2026, 10, 15, 13, 0, tzinfo=timezone.utc)
-_EXPECTED_STAMP = "Last Updated: 15 October, 2026 19:00"
+_EXPECTED_STAMP = "Last Updated: 15 October, 2026"
 
 
 def test_write_newmain_sheet_writes_sorted_rows_as_raw_at_b4():
@@ -293,23 +293,25 @@ def test_write_newmain_sheet_clears_content_without_losing_formatting():
     assert ws.clear_called is False
 
 
-def test_write_newmain_sheet_stamps_below_the_data():
+def test_write_newmain_sheet_stamps_below_the_data_in_the_last_column():
     ws = _FakeWorksheet("NewMain")
     entries = [_entry(CourseCode=f"CSE-{n}", Day="Sun", TimeSlot="9:0 - 10:0") for n in range(3)]
     gf.write_newmain_sheet(ws, entries, now=_STAMP_NOW)
 
-    # Three data rows sit at B4:B6, so the stamp is at B8 and the signature B9.
-    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "B8", {})
-    assert ws.updates[2] == ([[rf.SIGNATURE]], "B9", {})
-    assert ws.formatted == ("B9", {"horizontalAlignment": "RIGHT"})
+    # Three data rows sit at B4:B6, so the footer is at I8 and I9.
+    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "I8", {})
+    assert ws.updates[2] == ([[rf.SIGNATURE]], "I9", {})
+    assert ws.formatted == ("I9", {"horizontalAlignment": "RIGHT"})
+    # The stamp must not land in the data columns above/beside the block.
+    assert all(not rng.startswith("B") for _, rng, _ in ws.updates[1:])
 
 
 def test_write_newmain_sheet_reports_the_empty_backend_notice():
     ws = _FakeWorksheet("NewMain")
     assert gf.write_newmain_sheet(ws, [], now=_STAMP_NOW) is True
     assert ws.updates[0] == ([[rf.NO_DATA_MESSAGE]], "B4", {})
-    # The notice occupies B4, so the stamp still starts at B6.
-    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "B6", {})
+    # The notice occupies B4, so the footer still starts at row 6.
+    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "I6", {})
 
 
 def test_write_newmain_sheet_defaults_to_utc_now():

@@ -24,6 +24,7 @@ from routine_format import (
     build_sheet_data,
     contact_column_letter,
     format_stamp,
+    stamp_column_letter,
     stamp_row_for,
 )
 
@@ -284,12 +285,16 @@ def write_newmain_sheet(worksheet, entries, now=None):
             last_data_row = DATA_START_ROW
 
         stamp_row = stamp_row_for(last_data_row)
-        worksheet.update([[format_stamp(now)]], f"B{stamp_row}")
-        worksheet.update([[SIGNATURE]], f"B{stamp_row + 1}")
-        worksheet.format(f"B{stamp_row}", {"horizontalAlignment": "LEFT"})
-        worksheet.format(f"B{stamp_row + 1}", {"horizontalAlignment": "RIGHT"})
+        stamp_col = stamp_column_letter()
+        worksheet.update([[format_stamp(now)]], f"{stamp_col}{stamp_row}")
+        worksheet.update([[SIGNATURE]], f"{stamp_col}{stamp_row + 1}")
+        worksheet.format(f"{stamp_col}{stamp_row}", {"horizontalAlignment": "LEFT"})
+        worksheet.format(f"{stamp_col}{stamp_row + 1}", {"horizontalAlignment": "RIGHT"})
 
-        logger.info("Wrote %d rows to '%s' (stamp at B%d).", len(rows), worksheet.title, stamp_row)
+        logger.info(
+            "Wrote %d rows to '%s' (stamp at %s%d).",
+            len(rows), worksheet.title, stamp_col, stamp_row,
+        )
         return True
     except Exception as e:
         logger.error("Error writing to worksheet '%s': %s", worksheet.title, e)

@@ -35,6 +35,9 @@ BLANK_TIME = 99999
 UNPARSEABLE_TIME = 99998
 
 # [Footer]
+# The footer sits two rows below the data, in the last routine column (I), so it
+# cannot collide with the block however long the routine grows.
+STAMP_COLUMN = DATA_START_COL + DATA_WIDTH - 1
 STAMP_MIN_ROW = 6
 STAMP_PREFIX = "Last Updated: "
 SIGNATURE = "Made by Z  :)"
@@ -46,8 +49,7 @@ REPORT_UTC_OFFSET_HOURS = 6
 REPORT_TIMEZONE = timezone(timedelta(hours=REPORT_UTC_OFFSET_HOURS))
 
 # English month names hardcoded on purpose: strftime("%B") follows the process
-# locale, and the platform-specific "%-d" is not portable to Windows, whereas
-# the JS output was always "d MMMM, yyyy HH:mm" with no leading zero.
+# locale, so the stamp would change with the machine's language settings.
 MONTHS = (
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -93,18 +95,27 @@ def build_sheet_data(data_to_write):
     return all_rows
 
 
+def _column_letter(col_idx):
+    """1-based column index to its A1 letter(s): 1 -> 'A', 27 -> 'AA'."""
+    letters = ""
+    while col_idx > 0:
+        col_idx, remainder = divmod(col_idx - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+
 def contact_column_letter():
     """
     Returns the sheet column letter for the combined contact column (or "" if absent).
     """
     if CONTACT_COLUMN_HEADER not in SHEET_HEADERS:
         return ""
-    col_idx = SHEET_HEADERS.index(CONTACT_COLUMN_HEADER) + 1
-    letters = ""
-    while col_idx > 0:
-        col_idx, remainder = divmod(col_idx - 1, 26)
-        letters = chr(ord("A") + remainder) + letters
-    return letters
+    return _column_letter(SHEET_HEADERS.index(CONTACT_COLUMN_HEADER) + 1)
+
+
+def stamp_column_letter():
+    """Returns the sheet column letter the footer stamp and signature go in."""
+    return _column_letter(STAMP_COLUMN)
 
 
 # [Transformation]
@@ -203,11 +214,8 @@ def stamp_row_for(last_data_row):
 
 
 def format_stamp(now):
-    """Render the footer stamp: "Last Updated: <d Month, yyyy HH:mm>"."""
+    """Render the footer stamp: "Last Updated: <d Month, yyyy>"."""
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     moment = now.astimezone(REPORT_TIMEZONE)
-    return (
-        f"{STAMP_PREFIX}{moment.day} {MONTHS[moment.month - 1]}, "
-        f"{moment.year} {moment.hour:02d}:{moment.minute:02d}"
-    )
+    return f"{STAMP_PREFIX}{moment.day} {MONTHS[moment.month - 1]}, {moment.year}"

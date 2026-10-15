@@ -8,6 +8,7 @@ writer tests in test_gsheet_formatter.py.
 """
 
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -76,6 +77,13 @@ def test_build_sheet_data_invalid_returns_none():
 # ----------------------------- row shape: contact_column_letter -----------------------------
 
 def test_contact_column_letter_is_h():
+    assert rf.contact_column_letter() == "H"
+
+
+def test_stamp_column_letter_is_the_last_routine_column():
+    # The footer sits under the data in the last column (I) - not under B, which
+    # is where it used to be written.
+    assert rf.stamp_column_letter() == "I"
     assert rf.contact_column_letter() == "H"
 
 
@@ -263,9 +271,17 @@ def test_stamp_row_tolerates_a_missing_last_row():
 # ----------------------------- format_stamp -----------------------------
 
 def test_format_stamp_uses_the_fixed_gmt_plus_6_offset():
-    # 13:00 UTC is 19:00 in the fixed report timezone.
-    now = datetime(2026, 10, 15, 13, 0, tzinfo=timezone.utc)
-    assert rf.format_stamp(now) == "Last Updated: 15 October, 2026 19:00"
+    # 20:00 UTC is already the next day in the fixed report timezone, so the
+    # offset still affects the rendered date.
+    now = datetime(2026, 10, 15, 20, 0, tzinfo=timezone.utc)
+    assert rf.format_stamp(now) == "Last Updated: 16 October, 2026"
+
+
+def test_format_stamp_has_no_time_component():
+    # Date only. The stamp must not grow a clock time back.
+    stamp = rf.format_stamp(datetime(2026, 10, 15, 13, 0, tzinfo=timezone.utc))
+    assert stamp == "Last Updated: 15 October, 2026"
+    assert not re.search(r"\d{1,2}:\d{2}", stamp)
 
 
 def test_format_stamp_treats_a_naive_datetime_as_utc():
@@ -275,10 +291,10 @@ def test_format_stamp_treats_a_naive_datetime_as_utc():
 
 
 def test_format_stamp_rolls_over_the_year_at_the_offset():
-    # 20:00 UTC on New Year's Eve is 02:00 the next year in GMT+6. Also covers
-    # the missing leading zero on the day, the month name, and 24-hour padding.
+    # 20:00 UTC on New Year's Eve is the next year in GMT+6. Also covers the
+    # missing leading zero on the day and the month name.
     now = datetime(2026, 12, 31, 20, 0, tzinfo=timezone.utc)
-    assert rf.format_stamp(now) == "Last Updated: 1 January, 2027 02:00"
+    assert rf.format_stamp(now) == "Last Updated: 1 January, 2027"
 
 
 def test_format_stamp_names_every_month_in_english():
@@ -286,10 +302,10 @@ def test_format_stamp_names_every_month_in_english():
     # the process locale.
     for month_number, name in enumerate(rf.MONTHS, start=1):
         now = datetime(2027, month_number, 9, 6, 0, tzinfo=timezone.utc)
-        assert rf.format_stamp(now) == f"Last Updated: 9 {name}, 2027 12:00"
+        assert rf.format_stamp(now) == f"Last Updated: 9 {name}, 2027"
 
 
 def test_format_stamp_accepts_non_utc_aware_datetimes():
     # An offset anything like +06:00 maps to itself in the fixed timezone.
     now = datetime(2026, 10, 15, 19, 0, tzinfo=timezone(timedelta(hours=6)))
-    assert rf.format_stamp(now) == "Last Updated: 15 October, 2026 19:00"
+    assert rf.format_stamp(now) == "Last Updated: 15 October, 2026"
