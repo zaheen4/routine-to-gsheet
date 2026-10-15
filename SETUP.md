@@ -8,13 +8,12 @@ If you already have a working installation and are moving to a new machine, jump
 
 ## Overview
 
-The pipeline has three parts:
+The pipeline has two parts:
 
 1. **Scraper** (`routine_scrapper.py`) — logs into the UCAM (NITER) student portal with your credentials and scrapes the class-schedule dashboard. Requires a **Chrome or Chromium browser**.
-2. **Formatter** (`gsheet_formatter.py`) — writes the scraped routine into the `backend` tab of a Google Spreadsheet using a **service account**, then calls a **Google Apps Script** to sort/format it into the `NewMain` tab.
-3. **Google Apps Script** (`apps_script/Code.gs`) — a small script bound to your spreadsheet that does the final sorting and formatting. It is invoked by the formatter over the Apps Script API using an **OAuth client**.
+2. **Formatter** (`gsheet_formatter.py`) — writes the scraped routine into the `backend` tab of a Google Spreadsheet, then sorts and 12-hour-formats it into the `NewMain` tab. One script writes both tabs, using a **service account**.
 
-> **Why two Google credentials?** The service account is what authorizes *reading/writing the spreadsheet* (server-to-server, no login). The OAuth client is what authorizes *calling your Apps Script* on your behalf. For a normal consumer Google account (not a Workspace account), both are required — a service account cannot invoke a personal Apps Script.
+> **Why a service account?** A service account is a robot Google identity: the formatter authenticates server-to-server, with no browser login, no consent screen and no refresh token that can expire mid-week. The only manual step it needs is the one in [A3](#a3-create-a-service-account) — you must **share the spreadsheet** with the service account's email address.
 
 ### What you will need
 
@@ -42,8 +41,7 @@ The pipeline has three parts:
 In the [Google Cloud Console](https://console.cloud.google.com/), create a project (or reuse one), then enable these APIs under **APIs & Services > Library**:
 
 - Google Sheets API
-- Google Apps Script API
-- Google Drive API
+- Google Drive API (used to look the spreadsheet up by name)
 
 ### A3. Create a service account
 
@@ -56,31 +54,7 @@ In the [Google Cloud Console](https://console.cloud.google.com/), create a proje
    - Give it **Editor** access.
    - This is the single most common setup mistake — if you skip it, the formatter authenticates fine but fails to find/open the spreadsheet.
 
-### A4. Configure the OAuth consent screen
-
-1. Under **APIs & Services > OAuth consent screen**, choose **External** (anyone with a Google account).
-2. Fill in an **App name** and a **Support email**.
-3. Under **Audience > Test users**, add **your own email address**. Without this, the OAuth flow will show "access blocked".
-4. **Publish the app to Production** (button on the consent screen). This matters: for apps left in **Testing** mode, Google **revokes refresh tokens after 7 days**, which would force you to re-authenticate every week. Publishing to Production makes the refresh token long-lived.
-
-### A5. Create an OAuth client ID
-
-1. Under **APIs & Services > Credentials > Create Credentials > OAuth client ID**.
-2. Application type: **Desktop app**.
-3. Download the JSON, rename it to `oauth_client_secret.json`, and place it in `google_cloud_keys/`.
-
-### A6. Deploy the Google Apps Script
-
-1. Open your spreadsheet, then go to **Extensions > Apps Script**.
-2. Delete any stub code and paste the **entire** contents of [`apps_script/Code.gs`](apps_script/Code.gs).
-3. Click **Deploy > New deployment**.
-4. Type: **API Executable**. Description is optional.
-5. Click **Deploy**, then **copy the Script ID** from the deployment dialog.
-6. Save it as `APP_SCRIPT_ID` in your `.env` (see [Phase B](#phase-b--local-setup)).
-
-> **Redeploy after editing `Code.gs`:** a deployment pins a version, so changes to the file do nothing until you go to **Deploy > Manage deployments**, click the edit (pencil) icon, set **Version: New version**, and click **Deploy**.
->
-> **Optional live sorting:** the Python pipeline calls `triggerSortFromPython()` itself, so no trigger is needed. If you also want the sheet to re-sort while you edit `backend` by hand, add an installable trigger (**Triggers > Add trigger**, function `sortBackendData`, event source *From spreadsheet*, event type *On edit*).
+That is the entire Google Cloud side of the setup — the formatter needs no other credential.
 
 ---
 
@@ -117,16 +91,16 @@ This copies the template files to their real names if they're missing:
 |------|-----------|
 | `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (one `primary` account, plus optionally more `lab_merge` accounts to merge lab schedules) |
 | `configs_to_edit/teacher_contact_details.json` | Optional teacher contact lookup by initials |
-| `.env` | Runtime settings: spreadsheet name, target tab, Apps Script ID |
+| `.env` | Runtime settings: spreadsheet name, target tab, data-age limit |
 
 It will **not** create `google_cloud_keys/*.json` for you (those must be downloaded from Google Cloud in Phase A), but it will tell you if they're missing.
 
-The files it creates — and the Google keys once you drop them in — hold live credentials (your UCAM password, a Google service-account key, an OAuth refresh token), so keep them owner-only:
+The files it creates — and the Google key once you drop it in — hold live credentials (your UCAM password, a Google service-account key), so keep them owner-only:
 
 ```bash
-chmod 600 .env token.pickle configs_to_edit/ucam_login_credentials.json \
+chmod 600 .env configs_to_edit/ucam_login_credentials.json \
   configs_to_edit/teacher_contact_details.json \
-  google_cloud_keys/service_account_key.json google_cloud_keys/oauth_client_secret.json
+  google_cloud_keys/service_account_key.json
 ```
 
 `scripts/setup.py` creates the files it scaffolds with mode `600` and warns at the end if any credential file is readable beyond its owner (the default umask would leave them world-readable).
@@ -163,13 +137,12 @@ chmod 600 .env token.pickle configs_to_edit/ucam_login_credentials.json \
 HEADLESS=false
 SPREADSHEET_NAME=CSE-03_B_ClassRoutine
 TARGET_SHEET_NAME=backend
-APP_SCRIPT_ID=your_script_id_from_phase_A6
 LOG_LEVEL=INFO
 # Optional: refuse to publish scraper output older than N hours (default 48).
 #MAX_DATA_AGE_HOURS=48
 ```
 
-> `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you also rename the tabs in `apps_script/Code.gs`.
+> `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you rename that tab in your spreadsheet (the sorted output always goes to `NewMain`).
 >
 > Keep `HEADLESS=false` on Linux. True headless (`HEADLESS=true`) is detected by Cloudflare, so the portal answers every attempt with "Just a moment..." and the scrape fails. Scheduled and `scripts/run_routine.sh` runs are still invisible: the script launches the scraper under `xvfb-run`, and the scraper passes `--ozone-platform=x11`, so Chrome renders on the virtual X display instead of your screen. Direct `routine_scrapper.py` runs (no `xvfb-run`) open a visible window for debugging.
 
@@ -199,15 +172,15 @@ This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routin
 .venv/bin/python gsheet_formatter.py
 ```
 
-- The **first run opens an OAuth consent window in your browser** to create `token.pickle`. **Run this from a machine/session with a display**; if you run it fully headless and the token is missing, it now fails fast with a message instead of hanging.
-- The formatter writes raw data to `backend`, creates `NewMain` if needed, then calls your Apps Script to sort and format it.
+- There is **no browser step**: the service account authenticates silently, so this also works unattended (scheduled runs included).
+- The formatter writes the raw rows to `backend`, creates `NewMain` if it doesn't exist, then writes the sorted, 12-hour-formatted routine to `NewMain`.
 
 ### C3. Verify
 
 - [ ] `backend` tab contains the raw routine rows.
 - [ ] `NewMain` tab contains the sorted routine, and headers (if freshly created) at `B3:I3`.
-- [ ] `NewMain` shows a current **Last Updated** timestamp *below* the last routine row (the footer is written two rows under the data, column B) — not at a fixed `I24`.
-- [ ] Both stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without re-sorting) on missing/stale/undated data, an auth failure, a failed `backend` write, or a failed Apps Script trigger. Check the log line above the failure.
+- [ ] `NewMain` shows a current **Last Updated** date in **column I**, two rows below the last routine row, with the `Made by Z  :)` signature on the row after it.
+- [ ] Both stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without rewriting `NewMain`) on missing/stale/undated data, an auth failure, or a failed `backend` write. Check the log line above the failure.
 
 ---
 
@@ -241,7 +214,7 @@ Inspect or remove it with `schtasks /query /tn RoutineSync` / `schtasks /delete 
 
 ### D3. macOS — launchd LaunchAgent
 
-A LaunchAgent runs inside your logged-in GUI session, so Chrome and the OAuth browser behave like a normal terminal run (no `HEADLESS` needed). Install the example agent:
+A LaunchAgent runs inside your logged-in GUI session, so Chrome behaves like a normal terminal run (no `HEADLESS` needed). Install the example agent:
 
 ```bash
 sed "s|/path/to/your/project|$(pwd)|g" scripts/routine-automation.plist.example > ~/Library/LaunchAgents/com.user.routine-automation.plist
@@ -270,7 +243,7 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 
 - **Xvfb package name varies by distro.** `xvfb-run` ships inside `xvfb` on Debian/Ubuntu, `xorg-x11-server-Xvfb` on Fedora/RHEL, and `xorg-server-xvfb` on Arch. `scripts/run_routine.sh` now **fails fast on Linux when `xvfb-run` is missing** (instead of silently running headed) and prints the right install command for your distro.
 - **Chrome/Chromium must be installed.** The scraper needs a real Chrome or Chromium binary (nodriver drives Chrome only). Snap-installed Chromium on some distros can't be launched with a custom profile; if auto-detection picks an unusable binary, pin one via `CHROME_BINARY_PATH`.
-- **macOS needs one interactive formatter run.** The first `gsheet_formatter.py` run opens an OAuth consent window to mint `token.pickle`. A fully headless macOS session (e.g. SSH, no GUI login) can't do that, so run it once from a GUI session, or copy `token.pickle` from another machine (see below).
+- **macOS needs a GUI session for headed Chrome only.** `gsheet_formatter.py` itself is fully headless (the service account needs no browser), so only the scraper stage cares whether a display is available.
 - **Cloudflare and the portal are the real fragility.** UCAM sits behind Cloudflare, and the anti-bot posture can change without warning. Stealth libraries (nodriver included) are a best-effort game of catch-up: a run that works today can fail tomorrow with a "Just a moment..." challenge. The scheduler handles this with `Restart=on-failure` + a restart cap, and the pipeline fails loudly (`sys.exit(1)`) rather than syncing stale data.
 - **There is no CI.** GitHub Actions was removed because Cloudflare blocks GitHub's datacenter IPs, so the pipeline never succeeded there. All runs happen locally (or on a machine you control).
 
@@ -280,8 +253,6 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 |---------|--------------|-----|
 | `SpreadsheetNotFound: ...` | Sheet not created, wrong `SPREADSHEET_NAME`, or **sheet not shared with the service account `client_email`** | Share the sheet (Editor) with the service account email from `google_cloud_keys/service_account_key.json`; check the name in `.env`. |
 | `403 ... The caller does not have permission` | Service account lacks access | Same as above. |
-| OAuth window shows **"access blocked"** | Consent screen is External but your email isn't a **test user** | Add your email under **OAuth consent screen > Test users**. |
-| Formatter says **re-auth required** / fails fast | `token.pickle` missing or refresh token expired | Run `gsheet_formatter.py` once from a session with a display. If this keeps recurring every ~week, your OAuth app is still in **Testing** mode — publish to Production (A4). |
 | Scraper aborts with **"No Chrome binary found"** | Chrome/Chromium not installed or not on PATH | Install Chrome or Chromium, or set `CHROME_BINARY_PATH` in `.env` to a specific binary. |
 | `scripts/run_routine.sh` exits immediately with **xvfb-run not installed** | The Linux runner now requires a virtual X display | Install the Xvfb package for your distro (the message prints the exact command). |
 | Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
@@ -289,8 +260,7 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 | Scraper aborts with **"No valid routine entries left after merging"** | Portal markup changed, or the semester isn't published yet | If the schedule *is* live, inspect the raw panel HTML the scraper dumped to `tmp/` (the log line names the exact file). |
 | `No valid routine entries` (older wording) / `backend` is empty | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
 | A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
-| Formatter fails with **`APP_SCRIPT_ID is not configured`** | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
-| **Last Updated** stamp is missing or sits next to the data | `Code.gs` was edited but the deployment was not updated (a deployment pins a version) | **Deploy > Manage deployments >** edit **> Version: New version**. |
+| Formatter fails with a **Google API error** on write | The service account is a Viewer, or the sheet was unshared | Re-share the sheet with the service account email as **Editor**. |
 
 ---
 
@@ -304,11 +274,9 @@ You only need to repeat:
    - `configs_to_edit/ucam_login_credentials.json`
    - `configs_to_edit/teacher_contact_details.json`
    - `google_cloud_keys/service_account_key.json`
-   - `google_cloud_keys/oauth_client_secret.json`
    - `.env`
-   - `token.pickle` (or run the formatter once interactively to regenerate it)
 
-   Then lock them down: `chmod 600 .env token.pickle configs_to_edit/*.json google_cloud_keys/*.json`.
+   Then lock them down: `chmod 600 .env configs_to_edit/*.json google_cloud_keys/*.json`.
 4. Optionally reinstall automation (Phase D): systemd timer (Linux), Task Scheduler (Windows), or the launchd agent (macOS).
 
-Nothing on the Google side changes — the same spreadsheet, service account, OAuth client, and Apps Script deployment are reused.
+Nothing on the Google side changes — the same spreadsheet and the same service account are reused.
