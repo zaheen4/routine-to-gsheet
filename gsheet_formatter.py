@@ -259,6 +259,9 @@ def write_newmain_sheet(worksheet, entries, now=None):
     truth and a serialisation surprise in the 'backend' write cannot leak into
     the sorted output.
 
+    The fresh block is written before the stale tail is cleared, so a failure
+    part-way through can never leave the sheet blank.
+
     Args:
         worksheet (gspread.Worksheet): The 'NewMain' worksheet.
         entries (list): Routine entry dicts, as loaded from the scraper JSON.
@@ -272,9 +275,10 @@ def write_newmain_sheet(worksheet, entries, now=None):
     try:
         rows = build_newmain_rows(entries)
 
-        # Content only: a manual styling pass on the sheet survives.
-        worksheet.batch_clear([f"B{DATA_START_ROW}:I{worksheet.row_count}"])
-
+        # Write the fresh block *before* clearing anything. The previous order
+        # (clear B4:I{row_count}, then write) left 'NewMain' blank under a stale
+        # "Last Updated" footer if the write failed in between; this order means
+        # a failed write leaves the previous routine on the sheet instead.
         if rows:
             # RAW matches how 'backend' is written, so the two sheets agree
             # instead of 'NewMain' inheriting Sheets' typed coercion.
@@ -283,6 +287,16 @@ def write_newmain_sheet(worksheet, entries, now=None):
         else:
             worksheet.update(values=[[NO_DATA_MESSAGE]], range_name="B4")
             last_data_row = DATA_START_ROW
+
+        # Now that the new block is visible, drop whatever the previous run left
+        # below it - its sorted rows and its footer all live inside B..I. This
+        # is content-only (batch_clear, not clear()), so a manual styling pass
+        # survives. Nothing else is ever written below the footer, so clearing
+        # from the row under the new block down to the grid edge is exactly the
+        # stale tail, and it is never more than the old unconditional clear.
+        stale_from = last_data_row + 1
+        if stale_from <= worksheet.row_count:
+            worksheet.batch_clear([f"B{stale_from}:I{worksheet.row_count}"])
 
         stamp_row = stamp_row_for(last_data_row)
         stamp_col = stamp_column_letter()

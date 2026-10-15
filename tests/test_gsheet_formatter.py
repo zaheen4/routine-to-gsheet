@@ -128,6 +128,9 @@ class _FakeWorksheet:
         self.updates = []
         self.batch_cleared = None
         self.resized = None
+        # Ordered log of content calls, so tests can assert that a write
+        # happens before any clear (the "never blank NewMain" guarantee).
+        self.ops = []
 
     def clear(self):
         self.clear_called = True
@@ -135,12 +138,14 @@ class _FakeWorksheet:
     def update(self, values, range_name=None, **kwargs):
         self.updated = (values, range_name)
         self.updates.append((values, range_name, kwargs))
+        self.ops.append(("update", range_name))
 
     def format(self, rng, fmt):
         self.formatted = (rng, fmt)
 
     def batch_clear(self, ranges):
         self.batch_cleared = list(ranges)
+        self.ops.append(("batch_clear", list(ranges)))
 
     def resize(self, rows=None, cols=None):
         self.resized = (rows, cols)
@@ -284,13 +289,44 @@ def test_write_newmain_sheet_writes_sorted_rows_as_raw_at_b4():
     assert all(len(row) == rf.DATA_WIDTH for row in values)
 
 
-def test_write_newmain_sheet_clears_content_without_losing_formatting():
+def test_write_newmain_sheet_clears_only_the_stale_tail_below_the_new_block():
     ws = _FakeWorksheet("NewMain")
     gf.write_newmain_sheet(ws, [_entry()], now=_STAMP_NOW)
-    # batch_clear touches content only: a manual styling pass on the sheet
-    # survives, whereas worksheet.clear() would wipe the formats too.
-    assert ws.batch_cleared == ["B4:I1000"]
+    # One data row sits at B4, so the clear starts at B5: the old block, its
+    # footer and anything below are the stale tail, and the fresh row is left
+    # alone. batch_clear touches content only, so a manual styling pass on the
+    # sheet survives, whereas worksheet.clear() would wipe the formats too.
+    assert ws.batch_cleared == ["B5:I1000"]
     assert ws.clear_called is False
+
+
+def test_write_newmain_sheet_writes_the_new_block_before_clearing():
+    # The old order (clear B4:I{row_count} first) left NewMain blank under a
+    # stale footer whenever the write failed in between.
+    ws = _FakeWorksheet("NewMain")
+    gf.write_newmain_sheet(ws, [_entry()], now=_STAMP_NOW)
+    kinds = [kind for kind, _ in ws.ops]
+    assert kinds.index("update") < kinds.index("batch_clear")
+
+
+def test_write_newmain_sheet_keeps_the_old_block_when_the_value_write_fails():
+    # A failed write must leave the previous routine on the sheet, not blank it.
+    class _RaisingWorksheet:
+        title = "NewMain"
+        row_count = 1000
+
+        def __init__(self):
+            self.cleared = False
+
+        def update(self, values, range_name=None, **kwargs):
+            raise RuntimeError("boom")
+
+        def batch_clear(self, ranges):
+            self.cleared = True
+
+    ws = _RaisingWorksheet()
+    assert gf.write_newmain_sheet(ws, [_entry()]) is False
+    assert ws.cleared is False
 
 
 def test_write_newmain_sheet_stamps_below_the_data_in_the_last_column():
@@ -320,15 +356,20 @@ def test_write_newmain_sheet_defaults_to_utc_now():
     assert ws.updates[1][0][0][0].startswith("Last Updated: ")
 
 
-def test_write_newmain_sheet_returns_false_when_the_write_fails():
-    class _RaisingWorksheet:
+def test_write_newmain_sheet_returns_false_when_the_clear_fails():
+    # The data write already succeeded, so the failure is reported but the fresh
+    # rows stay on the sheet - a stale tail beats a blank one.
+    class _FailingClearWorksheet:
         title = "NewMain"
         row_count = 1000
+
+        def update(self, values, range_name=None, **kwargs):
+            pass
 
         def batch_clear(self, ranges):
             raise RuntimeError("boom")
 
-    assert gf.write_newmain_sheet(_RaisingWorksheet(), [_entry()]) is False
+    assert gf.write_newmain_sheet(_FailingClearWorksheet(), [_entry()]) is False
 
 
 # ----------------------------- main: exit code contract -----------------------------
