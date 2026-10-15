@@ -1,0 +1,32 @@
+# Lint/format and pytest configuration.
+#
+# Run everything with: scripts/verify.sh  (ruff + node tests + pytest)
+
+[tool.ruff]
+# Floor for the project's supported Python (the dev environment runs 3.14, so
+# this is what is actually exercised; ruff enforces 3.10-compatible syntax).
+target-version = "py310"
+# Used by `ruff format` if/when it is adopted; E501 is not enforced as a lint
+# rule (see below) so existing hand-wrapped lines are left alone.
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    # The codebase hand-wraps long lines; formatting it is a separate concern
+    # from correctness, so line length is not policed.
+    "E501",
+    # scripts/*.py print progress with %-formatting throughout; rewriting every
+    # call site to f-strings is churn with no behavioural benefit.
+    "UP031",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# These insert the project root into sys.path before importing project modules,
+# which necessarily puts imports after code.
+"scripts/setup.py" = ["E402"]
+"scripts/check_setup.py" = ["E402"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

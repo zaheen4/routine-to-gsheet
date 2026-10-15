@@ -17,11 +17,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from browser_lookup import (  # noqa: E402  (needs PROJECT_ROOT on sys.path first)
-    CHROME_BINARY_NAMES as CHROME_CANDIDATES,
-    get_chrome_executable,
-)
-from config import CHROME_BINARY_PATH  # noqa: E402
+from browser_lookup import get_chrome_executable
+from config import CHROME_BINARY_PATH
 
 # Real file -> template it is copied from (only when the real file is missing).
 TEMPLATE_MAP = {
@@ -57,16 +54,6 @@ REQUIRED_USER_KEYS = ["id", "username", "password", "section_label"]
 # Optional per-account role. Omitting it keeps the positional default
 # (users[0] = primary, the rest = lab_merge).
 VALID_USER_ROLES = ("primary", "lab_merge")
-
-# Browser binaries considered, in order of preference. Matches the scraper's
-# auto-detection so setup can warn early if none are installed.
-CHROME_CANDIDATES = [
-    "google-chrome-stable",
-    "google-chrome",
-    "chromium-browser",
-    "chromium",
-    "chrome",
-]
 
 ENV_PLACEHOLDER_IDS = {"your_app_script_id", "YOUR_APP_SCRIPT_ID_GOES_HERE", ""}
 
@@ -124,7 +111,7 @@ def validate_credentials_json(path):
     if not os.path.exists(path):
         return False, ["%s is missing" % path]
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         return False, ["%s is not valid JSON: %s" % (path, e)]
@@ -160,7 +147,7 @@ def validate_teacher_details(path):
     if not os.path.exists(path):
         return True, []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         return False, ["%s is not valid JSON: %s" % (path, e)]
@@ -192,7 +179,7 @@ def validate_env(path):
     errors = []
     if not os.path.exists(path):
         return False, ["%s is missing (run setup.py to create it)" % path]
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         lines = f.readlines()
 
     app_script_id = _env_value(lines, "APP_SCRIPT_ID")
@@ -252,7 +239,7 @@ def main():
     env_lines = None
     env_path = resolve_path(".env")
     if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
+        with open(env_path, encoding="utf-8") as f:
             env_lines = f.readlines()
     spreadsheet = _env_value(env_lines, "SPREADSHEET_NAME") or "CSE-03_B_ClassRoutine"
     print("  - SPREADSHEET_NAME resolves to:", spreadsheet)

@@ -1,22 +1,20 @@
+import asyncio
+import contextlib
+import csv
 import json
+import logging
+import os
+import re
 import sys
 import time
-import asyncio
 import traceback
-import logging
-import nodriver as nd
-from bs4 import BeautifulSoup
-import os
-import csv
-import re
 from datetime import datetime, timezone
 
-from config import HEADLESS, CHROME_BINARY_PATH, setup_logging
-from browser_lookup import (
-    CHROME_BINARY_NAMES,
-    get_chrome_executable as resolve_chrome_executable,
-    platform_chrome_candidates,
-)
+import nodriver as nd
+from bs4 import BeautifulSoup
+
+from browser_lookup import get_chrome_executable as resolve_chrome_executable
+from config import CHROME_BINARY_PATH, HEADLESS, setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -92,18 +90,18 @@ def load_credentials(file_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(script_dir, file_path)
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             credentials = json.load(f)
-        
+
         required_top_keys = ["users", "login_url", "attendance_dashboard_url"]
         if not all(key in credentials for key in required_top_keys):
             logger.error("Missing top-level keys in %s", file_path)
             return None
-            
+
         if not isinstance(credentials["users"], list) or not credentials["users"]:
             logger.error("'users' array is missing or empty.")
             return None
-            
+
         for user in credentials["users"]:
             required_user_keys = ["id", "username", "password", "section_label"]
             if not all(key in user for key in required_user_keys):
@@ -130,7 +128,7 @@ def load_teacher_details_from_file(file_path):
         file_path = os.path.join(script_dir, file_path)
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             teacher_details = json.load(f)
         if isinstance(teacher_details, dict):
             teacher_details = {
@@ -280,10 +278,8 @@ def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=No
 
 def _discard_file(path):
     """Best-effort removal of a temporary file; never raises."""
-    try:
+    with contextlib.suppress(OSError):
         os.remove(path)
-    except OSError:
-        pass
 
 
 def invalidate_previous_output(output_dir):
@@ -541,7 +537,8 @@ async def _evaluate_until(tab, expression, timeout, interval=EVALUATE_POLL_S, pr
     satisfy the predicate.
     """
     if predicate is None:
-        predicate = lambda value: value is not None
+        def predicate(value):
+            return value is not None
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -936,7 +933,7 @@ def build_run_output(entries, account_summaries, primary_semester, generated_at=
 
 async def main():
     logger.info("Executing scraper workflow...")
-    
+
     credentials = load_credentials(CREDENTIALS_FILE)
     if not credentials:
         logger.error(

@@ -1,20 +1,22 @@
+# Runtime dependencies (fully pinned). Test/lint tooling lives in
+# requirements-dev.txt, which installs this file first.
 attrs==25.3.0
 beautifulsoup4==4.13.4
 cachetools==5.5.2
 certifi==2025.4.26
 cffi==1.17.1
 charset-normalizer==3.4.2
+Deprecated==3.0.0
 google-api-core==2.25.0
 google-api-python-client==2.170.0
+googleapis-common-protos==1.70.0
 google-auth==2.40.2
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.2
-googleapis-common-protos==1.70.0
 gspread==6.2.1
 httplib2==0.22.0
 idna==3.10
-iniconfig==2.3.0
-oauthlib==3.2.2
+mss==10.2.0
 # nodriver is the official successor of undetected-chromedriver. It drives
 # Chrome over CDP directly - no chromedriver binary to download or match, so
 # Chrome auto-updates cannot cause "ChromeDriver only supports Chrome X"
@@ -22,23 +24,22 @@ oauthlib==3.2.2
 # cdp/network.py, which has no PEP 263 coding cookie, so Python 3 fails to
 # import them (SyntaxError); 0.50.6 is the first clean release after 0.47.0.
 nodriver==0.50.6
+oauthlib==3.2.2
 packaging==25.0
-pluggy==1.6.0
 proto-plus==1.26.1
 protobuf==6.31.1
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pycparser==2.22
-Pygments==2.20.0
 pyparsing==3.2.3
-pytest==9.1.1
-pytest-asyncio==1.4.0
 python-dotenv==1.1.0
 requests==2.32.3
 requests-oauthlib==2.0.0
 rsa==4.9.1
+setuptools==84.0.0
 soupsieve==2.7
 typing_extensions==4.13.2
 uritemplate==4.2.0
 urllib3==2.4.0
-setuptools
+websockets==17.2
+wrapt==2.5.1

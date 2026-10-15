@@ -18,10 +18,10 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config import SPREADSHEET_NAME, APP_SCRIPT_ID, HEADLESS, setup_logging
+from config import APP_SCRIPT_ID, HEADLESS, SPREADSHEET_NAME, setup_logging
 from gsheet_formatter import (
-    GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
     GOOGLE_OAUTH_CLIENT_SECRET_FILE,
+    GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
     TOKEN_PICKLE_FILE,
     authenticate_gsheet,
 )
@@ -54,7 +54,7 @@ def warn(description, detail=""):
 
 def load_json(path):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         return {"__error__": str(e)}

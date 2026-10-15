@@ -51,9 +51,9 @@ def platform_chrome_candidates():
         candidates = list(_MACOS_APP_BUNDLES)
     elif os.name == "nt":
         bases = [
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMW6432"),
+            os.environ.get("PROGRAMFILES(X86)"),
             os.environ.get("LOCALAPPDATA"),
         ]
         for base in bases:

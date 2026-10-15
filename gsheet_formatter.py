@@ -1,20 +1,21 @@
-import gspread
 import json
+import logging
 import os
 import pickle
 import sys
 import traceback
-import logging
 from datetime import datetime, timezone
-from google_auth_oauthlib.flow import InstalledAppFlow
+
+import gspread
 from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from config import (
-    SPREADSHEET_NAME,
-    TARGET_SHEET_NAME,
     APP_SCRIPT_ID,
     MAX_DATA_AGE_HOURS,
+    SPREADSHEET_NAME,
+    TARGET_SHEET_NAME,
     setup_logging,
 )
 
@@ -83,7 +84,7 @@ def load_routine_data(json_file_path):
     """
     logger.info("Loading routine data from: %s", json_file_path)
     try:
-        with open(json_file_path, 'r', encoding='utf-8') as f:
+        with open(json_file_path, encoding='utf-8') as f:
             data = json.load(f)
     except FileNotFoundError:
         logger.error("Error: Source file '%s' not found.", json_file_path)
@@ -135,10 +136,10 @@ def data_age_hours(generated_at):
 def authenticate_gsheet(service_account_json_path):
     """
     Authenticates with the Google Sheets API using a service account.
-    
+
     Args:
         service_account_json_path (str): Path to the service account JSON key.
-        
+
     Returns:
         gspread.Client: Authenticated gspread client or None if authentication fails.
     """
@@ -151,7 +152,7 @@ def authenticate_gsheet(service_account_json_path):
         if not os.path.exists(service_account_json_path):
             logger.error("Service account key not found at '%s'.", service_account_json_path)
             return None
-            
+
         gc = gspread.service_account(filename=service_account_json_path)
         logger.info("Google Sheets authentication successful.")
         return gc
@@ -162,7 +163,7 @@ def authenticate_gsheet(service_account_json_path):
 def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_headers=False):
     """
     Retrieves a worksheet by name, creating it if it does not exist.
-    
+
     Args:
         spreadsheet (gspread.Spreadsheet): The target spreadsheet object.
         sheet_name (str): Name of the worksheet to retrieve or create.
@@ -170,7 +171,7 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_hea
         cols (str): Initial column count for new worksheet.
         seed_headers (bool): If True, write SHEET_HEADERS to B3:I3 when a new
             worksheet is created (matches the Apps Script data block at B4).
-        
+
     Returns:
         gspread.Worksheet: The requested worksheet object or None if retrieval fails.
     """
@@ -236,11 +237,11 @@ def contact_column_letter():
 def write_data_to_sheet(worksheet, data_to_write):
     """
     Writes routine data to the worksheet with formatted headers and contact information.
-    
+
     Args:
         worksheet (gspread.Worksheet): The worksheet to update.
         data_to_write (list): List of routine entry dictionaries.
-        
+
     Returns:
         bool: True if writing was successful, False otherwise.
     """
@@ -263,7 +264,7 @@ def write_data_to_sheet(worksheet, data_to_write):
         contact_col_letter = contact_column_letter()
         if contact_col_letter:
             worksheet.format(
-                f"{contact_col_letter}2:{contact_col_letter}{len(all_rows)}", 
+                f"{contact_col_letter}2:{contact_col_letter}{len(all_rows)}",
                 {'wrapStrategy': 'WRAP'}
             )
             logger.info("Applied text wrapping to contact column (%s).", contact_col_letter)
@@ -295,14 +296,14 @@ def _headless_environment():
 def call_apps_script_function(script_id, function_name, client_secrets_file, token_pickle_file, scopes):
     """
     Authenticates and executes a Google Apps Script function via the API.
-    
+
     Args:
         script_id (str): The unique Script ID for the Apps Script project.
         function_name (str): The name of the function to execute.
         client_secrets_file (str): Path to the OAuth 2.0 client secret.
         token_pickle_file (str): Path to the cached authentication token.
         scopes (list): Required API scopes.
-        
+
     Returns:
         bool: True if execution succeeded, False otherwise.
     """
@@ -310,7 +311,7 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
     if os.path.exists(token_pickle_file):
         with open(token_pickle_file, 'rb') as token:
             creds = pickle.load(token)
-    
+
     # Refresh or obtain new credentials if necessary
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
@@ -329,7 +330,7 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
             logger.info("Authenticating with Google OAuth...")
             flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes)
             creds = flow.run_local_server(port=0)
-        
+
         with open(token_pickle_file, 'wb') as token:
             pickle.dump(creds, token)
         restrict_secret_file_mode(token_pickle_file)
@@ -338,15 +339,15 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
     try:
         service = build('script', 'v1', credentials=creds)
         logger.info("Executing Apps Script: %s...", function_name)
-        
+
         request_body = {"function": function_name}
         response = service.scripts().run(scriptId=script_id, body=request_body).execute()
-        
+
         if 'error' in response:
             error_msg = response['error'].get('errorMessage', 'Execution error')
             logger.error("Apps Script Error: %s", error_msg)
             return False
-        
+
         logger.info("Apps Script execution completed successfully.")
         return True
 

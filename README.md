@@ -22,7 +22,7 @@ An automated solution for scraping class schedules from the UCAM web portal and 
 
 ## Prerequisites
 
-* **Python 3.10+**
+* **Python 3.10+** (developed and tested on 3.14 — ruff enforces 3.10-compatible syntax, so older 3.1x versions are expected to work)
 * **pip** (Python package manager)
 * **Google Chrome** or **Chromium**
 * **Xvfb** (Required for headless Linux environments)
@@ -52,13 +52,17 @@ project_root/
 ├── scripts/                    # Local automation and helper scripts
 │   ├── run_routine.sh          # Runner script (Unix/macOS)
 │   ├── run_routine.bat         # Runner script (Windows)
+│   ├── verify.sh               # Lint + Node tests + pytest (verify.bat for Windows)
+│   ├── install_hooks.sh        # Optional pre-commit hook running verify.sh
 │   ├── setup.py                # Config scaffold + validation
 │   ├── check_setup.py          # Online preflight check
 │   ├── routine-automation.service.example
 │   ├── routine-automation.timer.example
 │   └── routine-automation.plist.example
 ├── output_of_fetched_routine/  # Local cache for scraped data
-├── requirements.txt            # Project dependencies
+├── pyproject.toml              # ruff + pytest configuration
+├── requirements.txt            # Runtime dependencies (pinned)
+├── requirements-dev.txt        # Test/lint dependencies (includes requirements.txt)
 ├── token.pickle                # Cached Google API authentication token
 └── README.md                   # Documentation
 ```
@@ -82,6 +86,8 @@ python -m venv .venv; .\.venv\Scripts\activate; pip install -r requirements.txt
 ```
 
 All commands below use `.venv/bin/python` (Unix/macOS) or `.\venv\Scripts\python.exe` (Windows); the venv need not be activated for them to work.
+
+`requirements.txt` is enough to *run* the pipeline; install `requirements-dev.txt` instead if you also want to run the tests and linter (it includes the runtime dependencies).
 
 Scaffold the config files from templates:
 
@@ -116,16 +122,34 @@ To run both stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scri
 
 ## Testing
 
-Run the unit test suite (covers dashboard parsing, merge logic, browser workflow steps, sheet-building helpers, and setup validation):
+Run every check with one command — ruff lint, the Apps Script tests, and the python test suite:
+
+```bash
+./scripts/verify.sh          # scripts\verify.bat on Windows
+```
+
+Install the dev dependencies first (they include the runtime ones):
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+```
+
+The python suite covers dashboard parsing, merge logic, browser workflow steps, sheet-building helpers, and setup validation:
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-The Apps Script in `apps_script/Code.gs` has its own test suite (sorting order, 12-hour normalization, and the "Last Updated" stamp placement), run with Node's built-in test runner:
+The Apps Script in `apps_script/Code.gs` has its own suite (sorting order, 12-hour normalization, and the "Last Updated" stamp placement), run with Node's built-in test runner:
 
 ```bash
 node --test "apps_script/tests/**/*.test.js"
+```
+
+Optional: make these run automatically before each commit (there is no CI — Cloudflare blocks the logged-in scrape from datacenter IPs, so the pipeline is always run locally):
+
+```bash
+./scripts/install_hooks.sh            # ./scripts/install_hooks.sh --uninstall to remove
 ```
 
 ---

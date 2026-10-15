@@ -3,7 +3,6 @@ import os
 
 import browser_lookup as bl
 
-
 # ----------------------------- platform_chrome_candidates -----------------------------
 
 def test_platform_candidates_macos(monkeypatch):
@@ -15,9 +14,9 @@ def test_platform_candidates_macos(monkeypatch):
 
 def test_platform_candidates_windows(monkeypatch):
     monkeypatch.setattr(bl.os, "name", "nt")
-    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+    for var in ("PROGRAMFILES", "PROGRAMW6432", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
+    monkeypatch.setenv("PROGRAMFILES", "C:\\Program Files")
     monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
     candidates = bl.platform_chrome_candidates()
     assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
@@ -32,9 +31,9 @@ def test_platform_candidates_linux_empty(monkeypatch):
 def test_platform_candidates_windows_dedupes(monkeypatch):
     monkeypatch.setattr(bl.os, "name", "nt")
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
-    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("ProgramW6432", "C:\\Program Files")
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.setenv("PROGRAMFILES", "C:\\Program Files")
+    monkeypatch.setenv("PROGRAMW6432", "C:\\Program Files")
     candidates = bl.platform_chrome_candidates()
     expected = os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")
     assert candidates.count(expected) == 1
