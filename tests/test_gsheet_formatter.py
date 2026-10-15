@@ -250,3 +250,85 @@ def test_call_apps_script_function_not_headless_calls_run_local_server(monkeypat
     )
     assert calls["flow_called"] is True
     assert result is False  # build() raises on fake creds -> caught by except
+
+
+# ----------------------------- main: exit code contract -----------------------------
+
+class _FakeGC:
+    def __init__(self, spreadsheet=None, not_found=False):
+        self._spreadsheet = spreadsheet
+        self._not_found = not_found
+        self.opened = []
+
+    def open(self, name):
+        self.opened.append(name)
+        if self._not_found:
+            raise gf.gspread.exceptions.SpreadsheetNotFound(name)
+        return self._spreadsheet
+
+
+def _main_spreadsheet():
+    """A spreadsheet that already owns both worksheets the workflow touches."""
+    return _FakeSpreadsheet(existing={
+        "backend": _FakeWorksheet("backend"),
+        "NewMain": _FakeWorksheet("NewMain"),
+    })
+
+
+def _patch_main(monkeypatch, data=None, gc=None, script_ok=True,
+                app_script_id="script-id"):
+    """Wire main()'s external dependencies to fakes; returns call counters."""
+    calls = {"apps_script": 0}
+    monkeypatch.setattr(
+        gf, "load_routine_data", lambda path: [_entry()] if data is None else data)
+    monkeypatch.setattr(gf, "authenticate_gsheet", lambda path: gc)
+    monkeypatch.setattr(gf, "APP_SCRIPT_ID", app_script_id)
+
+    def fake_call(**kwargs):
+        calls["apps_script"] += 1
+        return script_ok
+
+    monkeypatch.setattr(gf, "call_apps_script_function", fake_call)
+    return calls
+
+
+def test_main_returns_zero_when_sync_succeeds(monkeypatch):
+    calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
+    assert gf.main() == 0
+    assert calls["apps_script"] == 1
+
+
+def test_main_returns_nonzero_when_data_missing(monkeypatch):
+    _patch_main(monkeypatch, data=[], gc=_FakeGC(_main_spreadsheet()))
+    assert gf.main() != 0
+
+
+def test_main_returns_nonzero_when_authentication_fails(monkeypatch):
+    _patch_main(monkeypatch, gc=None)
+    assert gf.main() != 0
+
+
+def test_main_returns_nonzero_when_spreadsheet_not_found(monkeypatch):
+    _patch_main(monkeypatch, gc=_FakeGC(not_found=True))
+    assert gf.main() != 0
+
+
+def test_main_returns_nonzero_when_worksheet_write_fails(monkeypatch):
+    _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
+    monkeypatch.setattr(gf, "write_data_to_sheet", lambda ws, data: False)
+    assert gf.main() != 0
+
+
+def test_main_returns_nonzero_when_apps_script_fails(monkeypatch):
+    _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()), script_ok=False)
+    assert gf.main() != 0
+
+
+def test_main_returns_nonzero_when_app_script_id_is_placeholder(monkeypatch):
+    calls = _patch_main(
+        monkeypatch,
+        gc=_FakeGC(_main_spreadsheet()),
+        app_script_id="YOUR_APP_SCRIPT_ID_GOES_HERE",
+    )
+    assert gf.main() != 0
+    assert calls["apps_script"] == 0

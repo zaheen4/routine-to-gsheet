@@ -297,19 +297,31 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
 # [Main Execution]
 
 def main():
+    """
+    Run the sheet sync workflow.
+
+    Returns:
+        int: Process exit code - 0 only when the sheet was fully updated,
+        non-zero otherwise. Every caller (scripts/run_routine.sh, the systemd
+        unit's Restart=on-failure, Task Scheduler) relies on this to tell a
+        real sync apart from a no-op; every failure path used to return None
+        and exit 0, so a broken sync looked identical to a good one.
+    """
     logger.info("Initializing Google Sheets formatting workflow...")
 
     # 1. Load data source
     routine_data = load_routine_data(SCRAPED_DATA_JSON_PATH)
     if not routine_data:
-        logger.warning("Data source empty. Termination sequence initiated.")
-        return
+        logger.error("Data source empty. Aborting sync.")
+        return 1
 
     # 2. Authenticate and establish connection
     gc = authenticate_gsheet(GOOGLE_SERVICE_ACCOUNT_KEY_FILE)
     if not gc:
         logger.error("Authentication failure. Exiting.")
-        return
+        return 1
+
+    exit_code = 0
 
     try:
         logger.info("Opening spreadsheet: '%s'", SPREADSHEET_NAME)
@@ -328,8 +340,10 @@ def main():
                 logger.info("Spreadsheet synchronization successful.")
             else:
                 logger.error("Synchronization failed.")
+                exit_code = 1
         else:
             logger.error("Target worksheet unreachable. Exiting.")
+            exit_code = 1
 
         # 3b. Ensure the 'NewMain' worksheet exists for Apps Script post-processing
         new_main_ws = get_or_create_worksheet(
@@ -341,20 +355,24 @@ def main():
         )
         if not new_main_ws:
             logger.error("NewMain worksheet unreachable. Exiting.")
-            return
+            exit_code = 1
 
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error("Spreadsheet '%s' not found.", SPREADSHEET_NAME)
-        return
+        return 1
     except Exception as e:
         logger.error("Critical error during synchronization: %s", e)
         traceback.print_exc()
-        return
+        return 1
 
     # 4. Trigger post-processing via Apps Script
     logger.info("\nTriggering post-processing workflow...")
     if APP_SCRIPT_ID == 'YOUR_APP_SCRIPT_ID_GOES_HERE':
-        logger.warning("APP_SCRIPT_ID is not configured.")
+        logger.error(
+            "APP_SCRIPT_ID is not configured; '%s' was not re-sorted.",
+            NEW_MAIN_SHEET_NAME,
+        )
+        exit_code = 1
     else:
         call_success = call_apps_script_function(
             script_id=APP_SCRIPT_ID,
@@ -367,9 +385,14 @@ def main():
             logger.info("Post-processing complete. Sheets updated.")
         else:
             logger.error("Post-processing trigger failed.")
+            exit_code = 1
 
-    logger.info("Workflow execution finished.")
+    if exit_code == 0:
+        logger.info("Workflow execution finished.")
+    else:
+        logger.error("Workflow execution finished with errors (exit %d).", exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
