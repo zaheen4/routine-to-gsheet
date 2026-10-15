@@ -450,11 +450,15 @@ def test_main_exports_when_all_accounts_succeed(monkeypatch, tmp_path):
 
 
 def test_main_invalidates_previous_output_before_scraping(monkeypatch, tmp_path):
-    monkeypatch.setattr(rs, "FORMATTED_OUTPUT_DIR", str(tmp_path))
+    # tests/conftest.py redirects FORMATTED_OUTPUT_DIR to tmp_path; this test
+    # pins it explicitly because it asserts on that exact directory.
+    monkeypatch.setattr(rs, "FORMATTED_OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setattr(rs, "load_credentials", lambda path: _minimal_creds())
     monkeypatch.setattr(rs, "load_teacher_details_from_file", lambda path: {})
 
-    stale = tmp_path / rs.FINAL_ROUTINE_JSON_FILENAME
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    stale = out_dir / rs.FINAL_ROUTINE_JSON_FILENAME
     stale.write_text(json.dumps([{"CourseCode": "STALE"}]), encoding="utf-8")
 
     seen = {}
