@@ -31,7 +31,7 @@ function sortBackendData(e) {
     const startColOutput = targetSheet.getRange(targetStartCell).getColumn();
     targetSheet.getRange(startRowOutput, startColOutput, targetSheet.getMaxRows() - startRowOutput + 1, 8).clearContent();
     targetSheet.getRange(targetStartCell).setValue("No data found in 'backend' sheet.");
-    updateMetadata(targetSheet);
+    updateMetadata(targetSheet, startRowOutput);
     return;
   }
 
@@ -64,13 +64,28 @@ function sortBackendData(e) {
     targetSheet.getRange(startRowOutput, startColOutput, processedData.length, 8)
       .setValues(processedData.map(row => row.slice(0, 8)));
   }
-  updateMetadata(targetSheet);
+  updateMetadata(targetSheet, startRowOutput + processedData.length - 1);
 }
 
-function updateMetadata(sheet) {
-  const currentDate = Utilities.formatDate(new Date(), "GMT+6", "d MMMM, yyyy HH:mm");
-  sheet.getRange("I24").setValue("Last Updated: " + currentDate).setHorizontalAlignment("left");
-  sheet.getRange("I25").setValue(SIGNATURE).setHorizontalAlignment("right");
+// Timestamp used for the "Last Updated" footer. Kept as a named constant so the
+// (intentional) fixed offset is easy to find; switch to Session.getScriptTimeZone()
+// if you would rather follow the spreadsheet's timezone setting.
+const REPORT_TIMEZONE = "GMT+6";
+
+// Writes the "Last Updated" stamp and signature just BELOW the data block.
+// Output data occupies 8 columns from column B (B..I), so the previous fixed
+// I24/I25 cells sat inside the data once a routine grew past 20 rows and would
+// overwrite the last entries' teacher contact details.
+function updateMetadata(sheet, lastDataRow) {
+  const startColOutput = sheet.getRange("B4").getColumn();
+  const stampRow = Math.max(Number(lastDataRow || 0) + 2, 6);
+  const currentDate = Utilities.formatDate(new Date(), REPORT_TIMEZONE, "d MMMM, yyyy HH:mm");
+  sheet.getRange(stampRow, startColOutput)
+    .setValue("Last Updated: " + currentDate)
+    .setHorizontalAlignment("left");
+  sheet.getRange(stampRow + 1, startColOutput)
+    .setValue(SIGNATURE)
+    .setHorizontalAlignment("right");
 }
 
 function parseAndFormatTime(timeStr) {
