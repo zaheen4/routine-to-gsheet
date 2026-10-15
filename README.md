@@ -12,7 +12,7 @@ An automated solution for scraping class schedules from the UCAM web portal and 
 
 ### Key Features
 * **Automated Extraction**: Authenticates with the UCAM portal to retrieve schedule data.
-* **Multi-User Consolidation**: Supports merging schedules from two accounts (e.g., for lab section synchronization).
+* **Multi-User Consolidation**: Merges schedules from one or more accounts (exactly one `primary`, the rest `lab_merge` for lab-section synchronization).
 * **Data Enrichment**: Integrates teacher contact details from local configuration files.
 * **Flexible Browser Support**: Compatible with both Firefox and Google Chrome.
 * **Sheets Integration**: Uploads raw data and triggers Google Apps Script for post-processing.

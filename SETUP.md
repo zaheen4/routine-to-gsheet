@@ -111,7 +111,7 @@ This copies the template files to their real names if they're missing:
 
 | File | What it is |
 |------|-----------|
-| `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (1 account, or 2 if you merge a friend's lab schedule) |
+| `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (one `primary` account, plus optionally more `lab_merge` accounts to merge lab schedules) |
 | `configs_to_edit/teacher_contact_details.json` | Optional teacher contact lookup by initials |
 | `.env` | Runtime settings: spreadsheet name, target tab, Apps Script ID |
 
@@ -128,7 +128,8 @@ It will **not** create `google_cloud_keys/*.json` for you (those must be downloa
       "id": "my_primary_account",
       "username": "YOUR_UCAM_ID",
       "password": "YOUR_UCAM_PASSWORD",
-      "section_label": "A1"
+      "section_label": "A1",
+      "role": "primary"
     }
   ],
   "login_url": "https://ucam.niter.edu.bd/Security/Login.aspx",
@@ -136,7 +137,8 @@ It will **not** create `google_cloud_keys/*.json` for you (those must be downloa
 }
 ```
 
-- **One account is enough.** Add a second `users[]` entry only if you want to merge a lab schedule from another student's account (that second account's non-lab courses are ignored).
+- **One account is enough.** Add further `users[]` entries only if you want to merge lab schedules from other students' accounts (their non-lab courses are ignored).
+- **`role` is optional but recommended:** exactly one account must be `"primary"` (your own section — keeps every course); every other account should be `"lab_merge"` (contributes only its lab courses). Leave `role` out entirely and the old positional behaviour applies: the first account is the primary and the rest are lab_merge.
 - The two URLs are for the NITER portal and usually need no changes.
 
 **`configs_to_edit/teacher_contact_details.json`** — optional. Keyed by the teacher initials that appear in the portal (e.g. `"SS"`), mapping to `FullName` / `Phone` / `Email`. Leave the file empty (`{}`) if you don't need it.

@@ -57,7 +57,10 @@ def test_load_credentials_valid(tmp_path):
     }
     path = tmp_path / "creds.json"
     path.write_text(json.dumps(creds), encoding="utf-8")
-    assert rs.load_credentials(str(path)) == creds
+    loaded = rs.load_credentials(str(path))
+    assert loaded["login_url"] == creds["login_url"]
+    assert loaded["attendance_dashboard_url"] == creds["attendance_dashboard_url"]
+    assert loaded["users"] == [dict(creds["users"][0], role="primary")]
 
 
 def test_load_credentials_missing_top_keys(tmp_path):
@@ -78,6 +81,72 @@ def test_load_credentials_empty_users(tmp_path):
 def test_load_credentials_invalid_json(tmp_path):
     path = tmp_path / "creds.json"
     path.write_text("not json", encoding="utf-8")
+    assert rs.load_credentials(str(path)) is None
+
+
+# ----------------------------- resolve_user_roles -----------------------------
+
+def _user(uid, section="B1", **extra):
+    return {"id": uid, "username": "u", "password": "p", "section_label": section, **extra}
+
+
+def test_resolve_user_roles_defaults_to_positional():
+    users, error = rs.resolve_user_roles([_user(1), _user(2)])
+    assert error is None
+    assert [u["role"] for u in users] == ["primary", "lab_merge"]
+
+
+def test_resolve_user_roles_honours_explicit_roles():
+    users, error = rs.resolve_user_roles([
+        _user(1, role="lab_merge"),
+        _user(2, role="primary"),
+    ])
+    assert error is None
+    assert [u["role"] for u in users] == ["lab_merge", "primary"]
+
+
+def test_resolve_user_roles_supports_several_lab_accounts():
+    users, error = rs.resolve_user_roles([
+        _user(1, "B2", role="primary"),
+        _user(2, "B1", role="lab_merge"),
+        _user(3, "B3", role="lab_merge"),
+    ])
+    assert error is None
+    assert [u["section_label"] for u in users] == ["B2", "B1", "B3"]
+
+
+def test_resolve_user_roles_rejects_unknown_role():
+    users, error = rs.resolve_user_roles([_user(1, role="boss")])
+    assert users is None
+    assert "unknown role" in error
+
+
+def test_resolve_user_roles_rejects_two_primaries():
+    users, error = rs.resolve_user_roles([_user(1), _user(2, role="primary")])
+    assert users is None
+    assert "exactly one account must have role 'primary'" in error
+
+
+def test_load_credentials_fills_roles(tmp_path):
+    creds = {
+        "users": [_user(1, "B2"), _user(2, "B1")],
+        "login_url": "x",
+        "attendance_dashboard_url": "y",
+    }
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(creds), encoding="utf-8")
+    loaded = rs.load_credentials(str(path))
+    assert [u["role"] for u in loaded["users"]] == ["primary", "lab_merge"]
+
+
+def test_load_credentials_rejects_bad_roles(tmp_path):
+    creds = {
+        "users": [_user(1, role="primary"), _user(2, role="primary")],
+        "login_url": "x",
+        "attendance_dashboard_url": "y",
+    }
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps(creds), encoding="utf-8")
     assert rs.load_credentials(str(path)) is None
 
 

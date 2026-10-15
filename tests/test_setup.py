@@ -83,6 +83,48 @@ def test_validate_credentials_json_user_missing_keys(tmp_path):
     assert any("users[0]" in e for e in errors)
 
 
+def test_validate_credentials_json_accepts_valid_roles(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [
+            {"id": "a", "username": "u", "password": "p", "section_label": "A1", "role": "primary"},
+            {"id": "b", "username": "u", "password": "p", "section_label": "A2", "role": "lab_merge"},
+        ],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert ok, errors
+
+
+def test_validate_credentials_json_rejects_unknown_role(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [{"id": "a", "username": "u", "password": "p",
+                   "section_label": "A1", "role": "boss"}],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert not ok
+    assert any("unknown role" in e for e in errors)
+
+
+def test_validate_credentials_json_rejects_two_primaries(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({
+        "users": [
+            {"id": "a", "username": "u", "password": "p", "section_label": "A1", "role": "primary"},
+            {"id": "b", "username": "u", "password": "p", "section_label": "A2", "role": "primary"},
+        ],
+        "login_url": "http://x",
+        "attendance_dashboard_url": "http://y",
+    }), encoding="utf-8")
+    ok, errors = s.validate_credentials_json(str(path))
+    assert not ok
+    assert any("at most one" in e for e in errors)
+
+
 # ----------------------------- validate_teacher_details -----------------------------
 
 def test_validate_teacher_details_absent_is_ok(tmp_path):

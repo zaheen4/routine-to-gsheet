@@ -33,6 +33,9 @@ GOOGLE_KEY_FILES = [
 
 REQUIRED_CREDENTIALS_KEYS = ["users", "login_url", "attendance_dashboard_url"]
 REQUIRED_USER_KEYS = ["id", "username", "password", "section_label"]
+# Optional per-account role. Omitting it keeps the positional default
+# (users[0] = primary, the rest = lab_merge).
+VALID_USER_ROLES = ("primary", "lab_merge")
 
 # Browser binaries considered, in order of preference. Matches the scraper's
 # auto-detection so setup can warn early if none are installed.
@@ -121,10 +124,23 @@ def validate_credentials_json(path):
     if not isinstance(data.get("users"), list) or not data["users"]:
         errors.append("'users' must be a non-empty list")
     else:
+        primary_count = 0
         for i, user in enumerate(data["users"]):
             user_missing = [k for k in REQUIRED_USER_KEYS if k not in user]
             if user_missing:
                 errors.append("users[%d] missing key(s): %s" % (i, ", ".join(user_missing)))
+            role = user.get("role")
+            if role is not None and role not in VALID_USER_ROLES:
+                errors.append(
+                    "users[%d] has unknown role %r (expected one of: %s)"
+                    % (i, role, ", ".join(VALID_USER_ROLES))
+                )
+            if role == "primary":
+                primary_count += 1
+        if primary_count > 1:
+            errors.append(
+                "at most one account may have role 'primary' (found %d)" % primary_count
+            )
     return not errors, errors
 
 

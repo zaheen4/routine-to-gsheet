@@ -41,6 +41,44 @@ ACCOUNT_RETRY_ATTEMPTS = 2
 
 # [Data Loading Functions]
 
+# Roles an account can have. "primary" is the student's own section (keeps all
+# courses); "lab_merge" accounts contribute their lab courses only.
+USER_ROLES = ("primary", "lab_merge")
+
+
+def resolve_user_roles(users):
+    """
+    Fills in an explicit role for every account and validates the assignment.
+
+    ``role`` is optional and defaults to the historical positional behaviour
+    (users[0] = primary, every other account = lab_merge).
+
+    Returns:
+        tuple(list | None, str | None): (accounts with ``role`` set, error).
+        The list is None when the assignment is invalid.
+    """
+    resolved = []
+    primary_count = 0
+    for index, user in enumerate(users):
+        role = user.get("role")
+        if role is None:
+            role = "primary" if index == 0 else "lab_merge"
+        elif role not in USER_ROLES:
+            return None, (
+                f"users[{index}] has unknown role {role!r} "
+                f"(expected one of: {', '.join(USER_ROLES)})"
+            )
+        if role == "primary":
+            primary_count += 1
+        resolved.append(dict(user, role=role))
+
+    if primary_count != 1:
+        return None, (
+            f"exactly one account must have role 'primary', found {primary_count}"
+        )
+    return resolved, None
+
+
 def load_credentials(file_path):
     """
     Loads and validates UCAM authentication credentials from a JSON source.
@@ -67,7 +105,13 @@ def load_credentials(file_path):
             if not all(key in user for key in required_user_keys):
                 logger.error("Missing required user keys for ID: %s", user.get('id'))
                 return None
-                
+
+        resolved_users, role_error = resolve_user_roles(credentials["users"])
+        if role_error:
+            logger.error("Invalid account roles in %s: %s", file_path, role_error)
+            return None
+        credentials["users"] = resolved_users
+
         return credentials
     except Exception as e:
         logger.error("Critical error loading credentials: %s", e)
@@ -317,13 +361,25 @@ def missing_teacher_initials(all_collected_data, teacher_details):
 LAB_TITLE_RE = re.compile(r"\blab\b", re.IGNORECASE)
 
 
-def build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details):
+def _lab_section_set(lab_sections):
+    """Normalises the lab-section argument (None | str | iterable) to a set."""
+    if not lab_sections:
+        return set()
+    if isinstance(lab_sections, str):
+        return {lab_sections}
+    return {section for section in lab_sections if section}
+
+
+def build_final_routine(all_collected_data, primary_section, lab_sections, teacher_details):
     """
     Merges per-section scraped data into the final deduplicated routine.
 
-    The primary section keeps all courses; the secondary section contributes
+    The primary section keeps all courses; every lab_merge section contributes
     only lab courses (title contains the word "lab"). Entries are deduplicated
     by (CourseCode, Day, TimeSlot, Section).
+
+    Args:
+        lab_sections: A single section label, None, or an iterable of labels.
     """
     missing = missing_teacher_initials(all_collected_data, teacher_details)
     if missing:
@@ -332,13 +388,14 @@ def build_final_routine(all_collected_data, primary_section, secondary_section, 
             ", ".join(missing),
         )
 
+    lab_section_labels = _lab_section_set(lab_sections)
     final_routine = []
 
     for item in all_collected_data:
         is_lab = bool(LAB_TITLE_RE.search(item.get("CourseTitle", "")))
         item_section = item.get("UserScrapedSection")
 
-        if item_section == primary_section or (item_section == secondary_section and is_lab):
+        if item_section == primary_section or (item_section in lab_section_labels and is_lab):
             for prefix in ("ScheduleOne", "ScheduleTwo"):
                 entry = _schedule_entry(item, prefix, teacher_details)
                 if entry:
@@ -943,7 +1000,7 @@ async def main():
         "attendance_dashboard_url": credentials["attendance_dashboard_url"]
     }
 
-    for index, profile in enumerate(credentials["users"]):
+    for profile in credentials["users"]:
         try:
             user_data, semester = await scrape_account_with_retries(profile, common_urls)
         except Exception as e:
@@ -958,10 +1015,11 @@ async def main():
         account_summaries.append({
             "id": profile["id"],
             "section_label": profile.get("section_label"),
+            "role": profile.get("role"),
             "semester": semester,
             "entries": len(user_data),
         })
-        if index == 0:
+        if profile.get("role") == "primary":
             primary_semester = semester
 
     if failed_accounts:
@@ -976,19 +1034,27 @@ async def main():
         sys.exit(1)
 
     logger.info("--- Processing Combined Results ---")
-    primary_section = credentials["users"][0]["section_label"]
-    secondary_section = credentials["users"][1]["section_label"] if len(credentials["users"]) > 1 else None
+    primary_section = next(
+        user["section_label"]
+        for user in credentials["users"]
+        if user.get("role") == "primary"
+    )
+    lab_sections = [
+        user["section_label"]
+        for user in credentials["users"]
+        if user.get("role") == "lab_merge"
+    ]
 
-    unique_routine = build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details)
+    unique_routine = build_final_routine(all_collected_data, primary_section, lab_sections, teacher_details)
 
     if not unique_routine:
         logger.error(
             "No valid routine entries left after merging: %d raw entries collected, "
-            "primary section '%s', secondary(lab) section '%s'. If the portal has "
-            "published the schedule, check the raw panel HTML in %s.",
+            "primary section '%s', lab section(s) %s. If the portal has published the "
+            "schedule, check the raw panel HTML in %s.",
             len(all_collected_data),
             primary_section,
-            secondary_section,
+            lab_sections or "none",
             TMP_OUTPUT_DIR,
         )
         sys.exit(1)

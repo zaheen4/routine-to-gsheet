@@ -393,7 +393,7 @@ async def test_scrape_account_with_retries_exhausts_attempts(monkeypatch, tmp_pa
 
 def _minimal_creds():
     return {
-        "users": [{"id": 1, "section_label": "B2"}],
+        "users": [{"id": 1, "section_label": "B2", "role": "primary"}],
         "login_url": "https://login",
         "attendance_dashboard_url": "https://dash",
     }
@@ -442,7 +442,8 @@ def test_main_exports_when_all_accounts_succeed(monkeypatch, tmp_path):
     assert payload["semester"] == "Fall 2024"
     assert payload["generated_at"].endswith("Z")
     assert payload["accounts"] == [
-        {"id": 1, "section_label": "B2", "semester": "Fall 2024", "entries": 1}
+        {"id": 1, "section_label": "B2", "role": "primary",
+         "semester": "Fall 2024", "entries": 1}
     ]
     assert len(payload["entries"]) == 1
     assert payload["entries"][0]["CourseCode"] == "CSE-3201"
