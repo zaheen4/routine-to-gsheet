@@ -1,27 +1,30 @@
 import json
 import logging
 import os
-import pickle
 import sys
 import traceback
 from datetime import datetime, timezone
 
 import gspread
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
 
 from config import (
-    APP_SCRIPT_ID,
     MAX_DATA_AGE_HOURS,
     SPREADSHEET_NAME,
     TARGET_SHEET_NAME,
     setup_logging,
 )
 from routine_format import (
+    DATA_START_COL,
+    DATA_START_ROW,
+    DATA_WIDTH,
+    NO_DATA_MESSAGE,
     SHEET_HEADERS,
+    SIGNATURE,
+    build_newmain_rows,
     build_sheet_data,
     contact_column_letter,
+    format_stamp,
+    stamp_row_for,
 )
 
 setup_logging()
@@ -30,7 +33,6 @@ logger.info("gsheet_formatter.py starting...")
 
 # [Configuration]
 NEW_MAIN_SHEET_NAME = 'NewMain'
-FUNCTION_NAME = 'triggerSortFromPython'
 
 # [Path Constants]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,30 +45,14 @@ SCRAPED_DATA_JSON_PATH = os.path.join(BASE_DIR, "output_of_fetched_routine", "fi
 # from elsewhere.
 GOOGLE_KEYS_DIR = "google_cloud_keys"
 GOOGLE_SERVICE_ACCOUNT_KEY_FILE = os.path.join(BASE_DIR, GOOGLE_KEYS_DIR, "service_account_key.json")
-GOOGLE_OAUTH_CLIENT_SECRET_FILE = os.path.join(BASE_DIR, GOOGLE_KEYS_DIR, "oauth_client_secret.json")
 
-# Scopes for Apps Script and Spreadsheet API access
-APP_SCRIPT_SCOPES = [
-    'https://www.googleapis.com/auth/script.projects',
-    'https://www.googleapis.com/auth/script.external_request',
-    'https://www.googleapis.com/auth/spreadsheets'
-]
-TOKEN_PICKLE_FILE = os.path.join(BASE_DIR, "token.pickle")
-
-# Credential files are created owner-readable/writable only.
-PRIVATE_FILE_MODE = 0o600
+# The 'NewMain' block spans B..I; a worksheet needs at least this many columns
+# before anything can be written into it.
+NEW_MAIN_LAST_COL = DATA_START_COL + DATA_WIDTH - 1
 
 
-def restrict_secret_file_mode(path):
-    """Best-effort chmod 600 on a credential file; never raises.
+# [Helper Functions]
 
-    token.pickle is a refresh token in the clear, so it should not be left
-    group/world readable (the default umask on most Linux systems is 022).
-    """
-    try:
-        os.chmod(path, PRIVATE_FILE_MODE)
-    except OSError:
-        logger.debug("Could not restrict permissions on '%s'.", path)
 
 
 # [Helper Functions]
@@ -163,7 +149,8 @@ def authenticate_gsheet(service_account_json_path):
         logger.error("Authentication failed: %s", e)
         return None
 
-def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_headers=False):
+def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_headers=False,
+                            min_rows=None, min_cols=None):
     """
     Retrieves a worksheet by name, creating it if it does not exist.
 
@@ -173,7 +160,9 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_hea
         rows (str): Initial row count for new worksheet.
         cols (str): Initial column count for new worksheet.
         seed_headers (bool): If True, write SHEET_HEADERS to B3:I3 when a new
-            worksheet is created (matches the Apps Script data block at B4).
+            worksheet is created (matches the data block at B4).
+        min_rows (int): Grow an existing worksheet to at least this many rows.
+        min_cols (int): Grow an existing worksheet to at least this many columns.
 
     Returns:
         gspread.Worksheet: The requested worksheet object or None if retrieval fails.
@@ -192,7 +181,30 @@ def get_or_create_worksheet(spreadsheet, sheet_name, rows=100, cols=20, seed_hea
     except Exception as e:
         logger.error("Error accessing worksheet '%s': %s", sheet_name, e)
         return None
+    grow_worksheet(worksheet, min_rows=min_rows, min_cols=min_cols)
     return worksheet
+
+
+def grow_worksheet(worksheet, min_rows=None, min_cols=None):
+    """
+    Grow a worksheet when the required extent exceeds its current grid.
+
+    Worksheets used to be sized only when they were created, so a routine that
+    later grew past that size failed with "Range exceeds grid limits" - a
+    routine that grew from 25 to 40 rows hit it on both the 'backend' write and
+    the 'NewMain' write. Growth only: an existing sheet may deliberately carry
+    more rows or columns than the routine needs, so this never shrinks.
+    """
+    current_rows = getattr(worksheet, "row_count", None) or 0
+    current_cols = getattr(worksheet, "col_count", None) or 0
+    target_rows = max(current_rows, min_rows or 0)
+    target_cols = max(current_cols, min_cols or 0)
+    if target_rows > current_rows or target_cols > current_cols:
+        worksheet.resize(rows=target_rows, cols=target_cols)
+        logger.info(
+            "Grew '%s' from %dx%d to %dx%d to fit the routine.",
+            worksheet.title, current_rows, current_cols, target_rows, target_cols,
+        )
 
 
 def write_data_to_sheet(worksheet, data_to_write):
@@ -237,83 +249,50 @@ def write_data_to_sheet(worksheet, data_to_write):
         traceback.print_exc()
         return False
 
-def _headless_environment():
-    """Return True when no display/Wayland session is available.
-
-    Used to fail fast instead of hanging when a token re-auth is needed:
-    under the systemd timer there is no DISPLAY/WAYLAND_DISPLAY and no
-    browser can open the OAuth consent page, so run_local_server() would
-    wait until the service timeout.
-
-    Windows and macOS always have a GUI session available to the user
-    (macOS uses WindowServer, not X11, so DISPLAY is never set there) -
-    only Linux/BSD rely on the DISPLAY/WAYLAND_DISPLAY env vars.
+def write_newmain_sheet(worksheet, entries, now=None):
     """
-    if os.name == "nt" or sys.platform == "darwin":
-        return False
-    return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    Render the sorted routine into the 'NewMain' worksheet.
 
-
-def call_apps_script_function(script_id, function_name, client_secrets_file, token_pickle_file, scopes):
-    """
-    Authenticates and executes a Google Apps Script function via the API.
+    'NewMain' is built from the same in-memory entry list that was written to
+    'backend' rather than reading 'backend' back out, so there is one source of
+    truth and a serialisation surprise in the 'backend' write cannot leak into
+    the sorted output.
 
     Args:
-        script_id (str): The unique Script ID for the Apps Script project.
-        function_name (str): The name of the function to execute.
-        client_secrets_file (str): Path to the OAuth 2.0 client secret.
-        token_pickle_file (str): Path to the cached authentication token.
-        scopes (list): Required API scopes.
+        worksheet (gspread.Worksheet): The 'NewMain' worksheet.
+        entries (list): Routine entry dicts, as loaded from the scraper JSON.
+        now (datetime | None): Timestamp for the footer; defaults to UTC now.
 
     Returns:
-        bool: True if execution succeeded, False otherwise.
+        bool: True when the sheet was fully updated, False otherwise.
     """
-    creds = None
-    if os.path.exists(token_pickle_file):
-        with open(token_pickle_file, 'rb') as token:
-            creds = pickle.load(token)
-
-    # Refresh or obtain new credentials if necessary
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            logger.info("Refreshing API credentials...")
-            creds.refresh(Request())
-        else:
-            if _headless_environment():
-                logger.error(
-                    "Cached token is missing or expired with no refresh token. "
-                    "Re-authentication requires a browser session: run "
-                    "'gsheet_formatter.py' interactively once (with a DISPLAY) to "
-                    "complete the OAuth flow and refresh '%s'.",
-                    token_pickle_file,
-                )
-                return False
-            logger.info("Authenticating with Google OAuth...")
-            flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, scopes)
-            creds = flow.run_local_server(port=0)
-
-        with open(token_pickle_file, 'wb') as token:
-            pickle.dump(creds, token)
-        restrict_secret_file_mode(token_pickle_file)
-        logger.info("API credentials cached successfully.")
-
+    if now is None:
+        now = datetime.now(timezone.utc)
     try:
-        service = build('script', 'v1', credentials=creds)
-        logger.info("Executing Apps Script: %s...", function_name)
+        rows = build_newmain_rows(entries)
 
-        request_body = {"function": function_name}
-        response = service.scripts().run(scriptId=script_id, body=request_body).execute()
+        # Content only: a manual styling pass on the sheet survives.
+        worksheet.batch_clear([f"B{DATA_START_ROW}:I{worksheet.row_count}"])
 
-        if 'error' in response:
-            error_msg = response['error'].get('errorMessage', 'Execution error')
-            logger.error("Apps Script Error: %s", error_msg)
-            return False
+        if rows:
+            # RAW matches how 'backend' is written, so the two sheets agree
+            # instead of 'NewMain' inheriting Sheets' typed coercion.
+            worksheet.update(values=rows, range_name="B4", value_input_option="RAW")
+            last_data_row = DATA_START_ROW - 1 + len(rows)
+        else:
+            worksheet.update(values=[[NO_DATA_MESSAGE]], range_name="B4")
+            last_data_row = DATA_START_ROW
 
-        logger.info("Apps Script execution completed successfully.")
+        stamp_row = stamp_row_for(last_data_row)
+        worksheet.update([[format_stamp(now)]], f"B{stamp_row}")
+        worksheet.update([[SIGNATURE]], f"B{stamp_row + 1}")
+        worksheet.format(f"B{stamp_row}", {"horizontalAlignment": "LEFT"})
+        worksheet.format(f"B{stamp_row + 1}", {"horizontalAlignment": "RIGHT"})
+
+        logger.info("Wrote %d rows to '%s' (stamp at B%d).", len(rows), worksheet.title, stamp_row)
         return True
-
     except Exception as e:
-        logger.error("Failed to execute Apps Script: %s", e)
+        logger.error("Error writing to worksheet '%s': %s", worksheet.title, e)
         traceback.print_exc()
         return False
 
@@ -380,15 +359,16 @@ def main():
             TARGET_SHEET_NAME,
             rows=len(routine_data) + 5,
             cols=10,
+            min_rows=len(routine_data) + 1,
+            min_cols=DATA_WIDTH,
         )
 
         if target_ws:
             if write_data_to_sheet(target_ws, routine_data):
                 logger.info("Spreadsheet synchronization successful.")
             else:
-                # Bail out before creating/updating NewMain or triggering the Apps
-                # Script: the sort step reads 'backend' directly, so continuing here
-                # would republish the PREVIOUS run's rows as if they were fresh.
+                # Bail out before touching NewMain: continuing would leave the
+                # previous run's sorted rows on the sheet looking fresh.
                 logger.error(
                     "Synchronization failed. Skipping post-processing; '%s' and '%s' "
                     "were left untouched.",
@@ -400,13 +380,16 @@ def main():
             logger.error("Target worksheet unreachable. Exiting.")
             return 1
 
-        # 3b. Ensure the 'NewMain' worksheet exists for Apps Script post-processing
+        # 3b. Ensure the 'NewMain' worksheet exists, and is big enough for the
+        # block plus the two footer rows.
         new_main_ws = get_or_create_worksheet(
             spreadsheet,
             NEW_MAIN_SHEET_NAME,
             rows=max(30, len(routine_data) + 5),
             cols=10,
             seed_headers=True,
+            min_rows=len(routine_data) + 6,
+            min_cols=NEW_MAIN_LAST_COL,
         )
         if not new_main_ws:
             logger.error("NewMain worksheet unreachable. Exiting.")
@@ -420,37 +403,22 @@ def main():
         traceback.print_exc()
         return 1
 
-    # 4. Trigger post-processing via Apps Script
-    logger.info("\nTriggering post-processing workflow...")
-    if APP_SCRIPT_ID == 'YOUR_APP_SCRIPT_ID_GOES_HERE':
-        logger.error(
-            "APP_SCRIPT_ID is not configured; '%s' was not re-sorted.",
-            NEW_MAIN_SHEET_NAME,
-        )
-        exit_code = 1
+    # 4. Render the sorted output into 'NewMain'
+    logger.info("\nWriting sorted output to '%s'...", NEW_MAIN_SHEET_NAME)
+    if write_newmain_sheet(new_main_ws, routine_data):
+        logger.info("Post-processing complete. Sheets updated.")
     else:
-        call_success = call_apps_script_function(
-            script_id=APP_SCRIPT_ID,
-            function_name=FUNCTION_NAME,
-            client_secrets_file=GOOGLE_OAUTH_CLIENT_SECRET_FILE,
-            token_pickle_file=TOKEN_PICKLE_FILE,
-            scopes=APP_SCRIPT_SCOPES,
-        )
-        if call_success:
-            logger.info("Post-processing complete. Sheets updated.")
-        else:
-            logger.error("Post-processing trigger failed.")
-            exit_code = 1
+        logger.error("Writing '%s' failed.", NEW_MAIN_SHEET_NAME)
+        exit_code = 1
 
     if exit_code == 0:
         # One line that answers "did last night's run do anything?" from the
         # journal, without opening the spreadsheet.
         logger.info(
-            "Run summary: %d entries (%.1f h old) | '%s' -> %s('%s') -> '%s'",
+            "Run summary: %d entries (%.1f h old) | '%s' -> '%s' on '%s'",
             len(routine_data),
             age_hours,
             TARGET_SHEET_NAME,
-            FUNCTION_NAME,
             NEW_MAIN_SHEET_NAME,
             SPREADSHEET_NAME,
         )
