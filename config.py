@@ -33,10 +33,9 @@ HEADLESS = _env_bool("HEADLESS", False)
 # well-known .app bundle on macOS and Program Files installs on Windows).
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH")
 
-# Google Spreadsheet & Apps Script configuration
+# Google Spreadsheet configuration
 SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "CSE-03_B_ClassRoutine")
 TARGET_SHEET_NAME = os.getenv("TARGET_SHEET_NAME", "backend")
-APP_SCRIPT_ID = os.getenv("APP_SCRIPT_ID", "YOUR_APP_SCRIPT_ID_GOES_HERE")
 
 # Maximum age (hours) of the scraper's output that the formatter will publish.
 # Guards against a crashed or killed scrape leaving the previous run's JSON on

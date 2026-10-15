@@ -7,7 +7,7 @@
 # Why a local hook instead of CI: the scrape only works from a residential IP
 # (Cloudflare blocks GitHub's datacenter IPs), so the pipeline is never run on
 # a runner. The hook is the local safety net for the checks that do not need
-# the live portal: ruff, the Apps Script tests and the python test suite.
+# the live portal: ruff and the python test suite.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

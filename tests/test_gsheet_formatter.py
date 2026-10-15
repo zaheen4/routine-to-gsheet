@@ -6,17 +6,16 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gsheet_formatter as gf
+import routine_format as rf
 
 # ----------------------------- credential path anchoring -----------------------------
 
 def test_credential_paths_are_anchored_to_the_project_root():
     # Relative paths would resolve against the current working directory, so a
     # run from anywhere other than the project root would look for (and fail to
-    # find) the token/keys somewhere else.
+    # find) the service account key somewhere else.
     for path in (
-        gf.TOKEN_PICKLE_FILE,
         gf.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
-        gf.GOOGLE_OAUTH_CLIENT_SECRET_FILE,
         gf.SCRAPED_DATA_JSON_PATH,
     ):
         assert os.path.isabs(path), path
@@ -98,25 +97,7 @@ def test_data_age_hours_old():
 
 
 
-# ----------------------------- combine_contact_info -----------------------------
-
-def test_combine_contact_info_both_present():
-    assert gf.combine_contact_info("123", "a@b.com") == "123\na@b.com"
-
-
-def test_combine_contact_info_phone_only():
-    assert gf.combine_contact_info("123", "") == "123"
-
-
-def test_combine_contact_info_email_only():
-    assert gf.combine_contact_info("", "a@b.com") == "a@b.com"
-
-
-def test_combine_contact_info_neither():
-    assert gf.combine_contact_info("", "") == ""
-
-
-# ----------------------------- build_sheet_data -----------------------------
+# ----------------------------- shared test entries -----------------------------
 
 def _entry(**overrides):
     base = {
@@ -134,51 +115,44 @@ def _entry(**overrides):
     return base
 
 
-def test_build_sheet_data_header_and_rows():
-    rows = gf.build_sheet_data([_entry(), _entry(CourseCode="CSE-3212", Day="Wed")])
-    assert rows[0] == gf.SHEET_HEADERS
-    assert len(rows) == 3
-
-
-def test_build_sheet_data_merges_contact_column():
-    rows = gf.build_sheet_data([_entry()])
-    assert rows[1][7] == "123\na@b.com"
-
-
-def test_build_sheet_data_without_contact_uses_fallback():
-    rows = gf.build_sheet_data([_entry(TeacherPhone="", TeacherEmail="")])
-    assert rows[1][7] == ""
-
-
-def test_build_sheet_data_invalid_returns_none():
-    assert gf.build_sheet_data([]) is None
-    assert gf.build_sheet_data("not a list") is None
-    assert gf.build_sheet_data([["not", "dict"]]) is None
-
-
-# ----------------------------- contact_column_letter -----------------------------
-
-def test_contact_column_letter_is_h():
-    assert gf.contact_column_letter() == "H"
-
-
 # ----------------------------- get_or_create_worksheet -----------------------------
 
 class _FakeWorksheet:
-    def __init__(self, title):
+    def __init__(self, title, row_count=1000, col_count=26):
         self.title = title
+        self.row_count = row_count
+        self.col_count = col_count
         self.clear_called = False
         self.updated = None
         self.formatted = None
+        self.updates = []
+        self.batch_cleared = None
+        self.resized = None
+        # Ordered log of content calls, so tests can assert that a write
+        # happens before any clear (the "never blank NewMain" guarantee).
+        self.ops = []
 
     def clear(self):
         self.clear_called = True
 
-    def update(self, values, range_name):
+    def update(self, values, range_name=None, **kwargs):
         self.updated = (values, range_name)
+        self.updates.append((values, range_name, kwargs))
+        self.ops.append(("update", range_name))
 
     def format(self, rng, fmt):
         self.formatted = (rng, fmt)
+
+    def batch_clear(self, ranges):
+        self.batch_cleared = list(ranges)
+        self.ops.append(("batch_clear", list(ranges)))
+
+    def resize(self, rows=None, cols=None):
+        self.resized = (rows, cols)
+        if rows is not None:
+            self.row_count = rows
+        if cols is not None:
+            self.col_count = cols
 
 
 class _FakeSpreadsheet:
@@ -193,7 +167,7 @@ class _FakeSpreadsheet:
         raise gf.gspread.exceptions.WorksheetNotFound(name)
 
     def add_worksheet(self, title, rows, cols):
-        ws = _FakeWorksheet(title)
+        ws = _FakeWorksheet(title, row_count=rows, col_count=cols)
         self.created.append((title, rows, cols))
         return ws
 
@@ -216,7 +190,7 @@ def test_get_or_create_worksheet_seeds_headers_on_create():
     ws = gf.get_or_create_worksheet(ss, "NewMain", rows=30, cols=10, seed_headers=True)
     assert ws is not None
     assert ("NewMain", 30, 10) in ss.created
-    assert ws.updated == ([gf.SHEET_HEADERS], 'B3')
+    assert ws.updated == ([rf.SHEET_HEADERS], 'B3')
     assert ws.formatted == ("B3:I3", {'textFormat': {'bold': True}})
 
 
@@ -229,6 +203,45 @@ def test_get_or_create_worksheet_existing_does_not_overwrite():
     assert ws.formatted is None
 
 
+# ----------------------------- grow_worksheet (the grid-limits guard) -----------------------------
+
+def test_grow_worksheet_resizes_when_the_routine_outgrew_the_sheet():
+    # A sheet sized for a 25-row routine, now asked to hold 40: without this the
+    # write fails with "Range exceeds grid limits".
+    ws = _FakeWorksheet("NewMain", row_count=30, col_count=10)
+    gf.grow_worksheet(ws, min_rows=46, min_cols=9)
+    assert ws.resized == (46, 10)
+    assert ws.row_count == 46
+
+
+def test_grow_worksheet_is_a_noop_when_the_sheet_is_already_big_enough():
+    ws = _FakeWorksheet("NewMain", row_count=1000, col_count=26)
+    gf.grow_worksheet(ws, min_rows=46, min_cols=9)
+    assert ws.resized is None
+
+
+def test_grow_worksheet_never_shrinks_a_worksheet():
+    # Extra rows/columns may have been added deliberately to the sheet.
+    ws = _FakeWorksheet("backend", row_count=500, col_count=20)
+    gf.grow_worksheet(ws, min_rows=10, min_cols=8)
+    assert ws.resized is None
+    assert ws.row_count == 500
+    assert ws.col_count == 20
+
+
+def test_grow_worksheet_grows_columns_independently():
+    ws = _FakeWorksheet("NewMain", row_count=1000, col_count=5)
+    gf.grow_worksheet(ws, min_rows=10, min_cols=9)
+    assert ws.resized == (1000, 9)
+
+
+def test_get_or_create_worksheet_grows_an_existing_sheet():
+    ws = _FakeWorksheet("NewMain", row_count=30, col_count=10)
+    ss = _FakeSpreadsheet(existing={"NewMain": ws})
+    assert gf.get_or_create_worksheet(ss, "NewMain", min_rows=46, min_cols=9) is ws
+    assert ws.resized == (46, 10)
+
+
 # ----------------------------- write_data_to_sheet -----------------------------
 
 def test_write_data_to_sheet_success():
@@ -237,7 +250,7 @@ def test_write_data_to_sheet_success():
     assert ok is True
     assert ws.clear_called is True
     assert ws.updated is not None
-    assert ws.updated[0][0] == gf.SHEET_HEADERS
+    assert ws.updated[0][0] == rf.SHEET_HEADERS
     assert ws.formatted == ("H2:H2", {"wrapStrategy": "WRAP"})
 
 
@@ -252,84 +265,111 @@ def test_write_data_to_sheet_invalid_returns_false():
     assert gf.write_data_to_sheet(ws, [["not", "dict"]]) is False
 
 
-# ----------------------------- _headless_environment -----------------------------
+# ----------------------------- write_newmain_sheet -----------------------------
 
-def test_headless_environment_true_without_display(monkeypatch):
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    assert gf._headless_environment() is True
+_STAMP_NOW = datetime(2026, 10, 15, 13, 0, tzinfo=timezone.utc)
+_EXPECTED_STAMP = "Last Updated: 15 October, 2026"
 
 
-def test_headless_environment_false_with_display(monkeypatch):
-    monkeypatch.setenv("DISPLAY", ":0")
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    assert gf._headless_environment() is False
+def test_write_newmain_sheet_writes_sorted_rows_as_raw_at_b4():
+    ws = _FakeWorksheet("NewMain")
+    entries = [
+        _entry(CourseCode="CSE-3201", Day="Wed", TimeSlot="11:0 - 12:15"),
+        _entry(CourseCode="CSE-3202", Day="Sat", TimeSlot="9:0 - 10:20"),
+    ]
+    assert gf.write_newmain_sheet(ws, entries, now=_STAMP_NOW) is True
+
+    values, range_name, kwargs = ws.updates[0]
+    assert range_name == "B4"
+    # RAW matches how 'backend' is written; without it NewMain would inherit
+    # Sheets' own coercion and the two sheets could disagree.
+    assert kwargs == {"value_input_option": "RAW"}
+    assert [row[0] for row in values] == ["CSE-3202", "CSE-3201"]
+    assert values[0][5] == "9:00 AM - 10:20 AM"
+    assert all(len(row) == rf.DATA_WIDTH for row in values)
 
 
-def test_headless_environment_false_on_windows(monkeypatch):
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.setattr(gf.os, "name", "nt")
-    assert gf._headless_environment() is False
+def test_write_newmain_sheet_clears_only_the_stale_tail_below_the_new_block():
+    ws = _FakeWorksheet("NewMain")
+    gf.write_newmain_sheet(ws, [_entry()], now=_STAMP_NOW)
+    # One data row sits at B4, so the clear starts at B5: the old block, its
+    # footer and anything below are the stale tail, and the fresh row is left
+    # alone. batch_clear touches content only, so a manual styling pass on the
+    # sheet survives, whereas worksheet.clear() would wipe the formats too.
+    assert ws.batch_cleared == ["B5:I1000"]
+    assert ws.clear_called is False
 
 
-def test_headless_environment_false_on_macos(monkeypatch):
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.setattr(gf.sys, "platform", "darwin")
-    assert gf._headless_environment() is False
+def test_write_newmain_sheet_writes_the_new_block_before_clearing():
+    # The old order (clear B4:I{row_count} first) left NewMain blank under a
+    # stale footer whenever the write failed in between.
+    ws = _FakeWorksheet("NewMain")
+    gf.write_newmain_sheet(ws, [_entry()], now=_STAMP_NOW)
+    kinds = [kind for kind, _ in ws.ops]
+    assert kinds.index("update") < kinds.index("batch_clear")
 
 
-# ----------------------------- call_apps_script_function fail-fast -----------------------------
+def test_write_newmain_sheet_keeps_the_old_block_when_the_value_write_fails():
+    # A failed write must leave the previous routine on the sheet, not blank it.
+    class _RaisingWorksheet:
+        title = "NewMain"
+        row_count = 1000
 
-def test_call_apps_script_function_fails_fast_headless(monkeypatch, tmp_path):
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    token_file = tmp_path / "token.pickle"
-    result = gf.call_apps_script_function(
-        "script_id", "func", "client.json", str(token_file), []
-    )
-    assert result is False
+        def __init__(self):
+            self.cleared = False
 
+        def update(self, values, range_name=None, **kwargs):
+            raise RuntimeError("boom")
 
-def test_call_apps_script_function_not_headless_calls_run_local_server(monkeypatch, tmp_path):
-    monkeypatch.setenv("DISPLAY", ":0")
-    token_file = tmp_path / "token.pickle"
-    calls = {"flow_called": False}
+        def batch_clear(self, ranges):
+            self.cleared = True
 
-    class _FakeFlow:
-        def run_local_server(self, port):
-            calls["flow_called"] = True
-            calls["port"] = port
-            return "fake_creds"
-
-    def _fake_from_client_secrets_file(*args, **kwargs):
-        return _FakeFlow()
-
-    monkeypatch.setattr(gf.InstalledAppFlow, "from_client_secrets_file", _fake_from_client_secrets_file)
-    monkeypatch.setattr(gf.pickle, "dump", lambda *a, **k: None)
-
-    result = gf.call_apps_script_function(
-        "script_id", "func", "client.json", str(token_file), []
-    )
-    assert calls["flow_called"] is True
-    assert result is False  # build() raises on fake creds -> caught by except
+    ws = _RaisingWorksheet()
+    assert gf.write_newmain_sheet(ws, [_entry()]) is False
+    assert ws.cleared is False
 
 
-# ----------------------------- restrict_secret_file_mode -----------------------------
+def test_write_newmain_sheet_stamps_below_the_data_in_the_last_column():
+    ws = _FakeWorksheet("NewMain")
+    entries = [_entry(CourseCode=f"CSE-{n}", Day="Sun", TimeSlot="9:0 - 10:0") for n in range(3)]
+    gf.write_newmain_sheet(ws, entries, now=_STAMP_NOW)
 
-def test_restrict_secret_file_mode_chmods(tmp_path):
-    if os.name == "nt":
-        return  # POSIX permission bits are not meaningful on Windows
-    target = tmp_path / "token.pickle"
-    target.write_bytes(b"secret")
-    os.chmod(target, 0o644)
-    gf.restrict_secret_file_mode(str(target))
-    assert os.stat(target).st_mode & 0o777 == gf.PRIVATE_FILE_MODE
+    # Three data rows sit at B4:B6, so the footer is at I8 and I9.
+    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "I8", {})
+    assert ws.updates[2] == ([[rf.SIGNATURE]], "I9", {})
+    assert ws.formatted == ("I9", {"horizontalAlignment": "RIGHT"})
+    # The stamp must not land in the data columns above/beside the block.
+    assert all(not rng.startswith("B") for _, rng, _ in ws.updates[1:])
 
 
-def test_restrict_secret_file_mode_tolerates_missing_file(tmp_path):
-    gf.restrict_secret_file_mode(str(tmp_path / "nope.pickle"))  # must not raise
+def test_write_newmain_sheet_reports_the_empty_backend_notice():
+    ws = _FakeWorksheet("NewMain")
+    assert gf.write_newmain_sheet(ws, [], now=_STAMP_NOW) is True
+    assert ws.updates[0] == ([[rf.NO_DATA_MESSAGE]], "B4", {})
+    # The notice occupies B4, so the footer still starts at row 6.
+    assert ws.updates[1] == ([[_EXPECTED_STAMP]], "I6", {})
+
+
+def test_write_newmain_sheet_defaults_to_utc_now():
+    ws = _FakeWorksheet("NewMain")
+    assert gf.write_newmain_sheet(ws, [_entry()]) is True
+    assert ws.updates[1][0][0][0].startswith("Last Updated: ")
+
+
+def test_write_newmain_sheet_returns_false_when_the_clear_fails():
+    # The data write already succeeded, so the failure is reported but the fresh
+    # rows stay on the sheet - a stale tail beats a blank one.
+    class _FailingClearWorksheet:
+        title = "NewMain"
+        row_count = 1000
+
+        def update(self, values, range_name=None, **kwargs):
+            pass
+
+        def batch_clear(self, ranges):
+            raise RuntimeError("boom")
+
+    assert gf.write_newmain_sheet(_FailingClearWorksheet(), [_entry()]) is False
 
 
 # ----------------------------- main: exit code contract -----------------------------
@@ -363,10 +403,10 @@ def _main_spreadsheet():
     })
 
 
-def _patch_main(monkeypatch, data=None, gc=None, script_ok=True,
-                app_script_id="script-id", generated_at=_NOW, max_age=48):
+def _patch_main(monkeypatch, data=None, gc=None, newmain_ok=True,
+                generated_at=_NOW, max_age=48):
     """Wire main()'s external dependencies to fakes; returns call counters."""
-    calls = {"apps_script": 0}
+    calls = {"newmain": 0}
     entries = [_entry()] if data is None else data
     stamp = (
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -374,21 +414,20 @@ def _patch_main(monkeypatch, data=None, gc=None, script_ok=True,
     )
     monkeypatch.setattr(gf, "load_routine_data", lambda path: (entries, stamp))
     monkeypatch.setattr(gf, "authenticate_gsheet", lambda path: gc)
-    monkeypatch.setattr(gf, "APP_SCRIPT_ID", app_script_id)
     monkeypatch.setattr(gf, "MAX_DATA_AGE_HOURS", max_age)
 
-    def fake_call(**kwargs):
-        calls["apps_script"] += 1
-        return script_ok
+    def fake_write(worksheet, entries, now=None):
+        calls["newmain"] += 1
+        return newmain_ok
 
-    monkeypatch.setattr(gf, "call_apps_script_function", fake_call)
+    monkeypatch.setattr(gf, "write_newmain_sheet", fake_write)
     return calls
 
 
 def test_main_returns_zero_when_sync_succeeds(monkeypatch):
     calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
     assert gf.main() == 0
-    assert calls["apps_script"] == 1
+    assert calls["newmain"] == 1
 
 
 def test_main_returns_nonzero_when_data_missing(monkeypatch):
@@ -406,28 +445,19 @@ def test_main_returns_nonzero_when_spreadsheet_not_found(monkeypatch):
     assert gf.main() != 0
 
 
-def test_main_returns_nonzero_when_worksheet_write_fails(monkeypatch):
+def test_main_returns_nonzero_when_backend_write_fails(monkeypatch):
     calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
     monkeypatch.setattr(gf, "write_data_to_sheet", lambda ws, data: False)
     assert gf.main() != 0
-    # The Apps Script must not run: it would re-sort the stale 'backend' rows
-    # into NewMain and republish the previous run's data as fresh.
-    assert calls["apps_script"] == 0
+    # NewMain must not be rewritten: it would republish the previous run's
+    # sorted rows as if they were this run's.
+    assert calls["newmain"] == 0
 
 
-def test_main_returns_nonzero_when_apps_script_fails(monkeypatch):
-    _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()), script_ok=False)
+def test_main_returns_nonzero_when_newmain_write_fails(monkeypatch):
+    calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()), newmain_ok=False)
     assert gf.main() != 0
-
-
-def test_main_returns_nonzero_when_app_script_id_is_placeholder(monkeypatch):
-    calls = _patch_main(
-        monkeypatch,
-        gc=_FakeGC(_main_spreadsheet()),
-        app_script_id="YOUR_APP_SCRIPT_ID_GOES_HERE",
-    )
-    assert gf.main() != 0
-    assert calls["apps_script"] == 0
+    assert calls["newmain"] == 1
 
 
 def test_main_returns_nonzero_when_data_is_stale(monkeypatch):
@@ -437,7 +467,7 @@ def test_main_returns_nonzero_when_data_is_stale(monkeypatch):
         generated_at=_stale_timestamp(72),
     )
     assert gf.main() != 0
-    assert calls["apps_script"] == 0
+    assert calls["newmain"] == 0
 
 
 def test_main_returns_nonzero_when_data_has_no_timestamp(monkeypatch):
@@ -449,7 +479,7 @@ def test_main_returns_nonzero_when_data_has_no_timestamp(monkeypatch):
         generated_at=None,
     )
     assert gf.main() != 0
-    assert calls["apps_script"] == 0
+    assert calls["newmain"] == 0
 
 
 def test_main_publishes_fresh_data_within_limit(monkeypatch):
@@ -459,7 +489,7 @@ def test_main_publishes_fresh_data_within_limit(monkeypatch):
         generated_at=_stale_timestamp(2),
     )
     assert gf.main() == 0
-    assert calls["apps_script"] == 1
+    assert calls["newmain"] == 1
 
 
 def test_main_age_check_can_be_disabled(monkeypatch):
@@ -470,5 +500,22 @@ def test_main_age_check_can_be_disabled(monkeypatch):
         max_age=0,
     )
     assert gf.main() == 0
-    assert calls["apps_script"] == 1
+    assert calls["newmain"] == 1
+
+
+def test_main_grows_the_worksheets_to_fit_a_grown_routine(monkeypatch):
+    # Both sheets exist already but are too small; main() must grow them rather
+    # than let the write fail with "Range exceeds grid limits".
+    backend_ws = _FakeWorksheet("backend", row_count=30, col_count=10)
+    newmain_ws = _FakeWorksheet("NewMain", row_count=30, col_count=10)
+    spreadsheet = _FakeSpreadsheet(existing={"backend": backend_ws, "NewMain": newmain_ws})
+    entries = [_entry(CourseCode=f"CSE-{n}") for n in range(40)]
+
+    calls = _patch_main(monkeypatch, data=entries, gc=_FakeGC(spreadsheet))
+    assert gf.main() == 0
+    assert calls["newmain"] == 1
+    assert backend_ws.row_count == 41          # header + 40 entries
+    assert newmain_ws.row_count == 46          # 40 entries + header + 2 footer rows
+    # Already wide enough for B..I, so the width is left as it is.
+    assert newmain_ws.col_count == 10
 

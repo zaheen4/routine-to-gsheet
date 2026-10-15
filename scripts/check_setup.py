@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Online preflight check for the routine pipeline.
 
-Verifies local config files are present and valid, that the spreadsheet can
-be opened with the service account (catches the "not shared" mistake), and
-that the OAuth/token pieces are in place for the Apps Script call.
+Verifies local config files are present and valid, and that the spreadsheet can
+be opened with the service account (catches the "not shared" mistake).
 
 Usage:
     python scripts/check_setup.py
@@ -18,18 +17,15 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config import APP_SCRIPT_ID, HEADLESS, SPREADSHEET_NAME, setup_logging
+from config import HEADLESS, SPREADSHEET_NAME, setup_logging
 from gsheet_formatter import (
-    GOOGLE_OAUTH_CLIENT_SECRET_FILE,
     GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
-    TOKEN_PICKLE_FILE,
     authenticate_gsheet,
 )
 from routine_scrapper import get_chrome_executable
 
 setup_logging()
 
-PLACEHOLDER_ID = "YOUR_APP_SCRIPT_ID_GOES_HERE"
 problems = []
 
 
@@ -75,15 +71,6 @@ def main():
         check("service account key has client_email",
               bool(client_email), "share the spreadsheet with this email (SETUP.md Phase A3)")
 
-    oauth = load_json(GOOGLE_OAUTH_CLIENT_SECRET_FILE)
-    check("OAuth client secret is valid JSON",
-          "__error__" not in oauth,
-          "%s: %s" % (GOOGLE_OAUTH_CLIENT_SECRET_FILE, oauth.get("__error__", "")))
-
-    check("cached token exists (token.pickle)",
-          os.path.exists(TOKEN_PICKLE_FILE),
-          "absent only on a fresh machine; the formatter will create it on first interactive run")
-
     print("\nGoogle connection")
     gc = None
     if not any("service account key" in p for p in problems):
@@ -99,11 +86,6 @@ def main():
                   False,
                   "%s — make sure the sheet exists, the name in .env is exact, and the "
                   "sheet is shared (Editor) with %s" % (e, client_email))
-
-    print("\nApps Script trigger")
-    check("APP_SCRIPT_ID is configured (not placeholder)",
-          bool(APP_SCRIPT_ID) and APP_SCRIPT_ID != PLACEHOLDER_ID,
-          "set APP_SCRIPT_ID in .env (SETUP.md Phase A6)")
 
     print("\nScraper environment (informational - warnings never block)")
     chrome = get_chrome_executable()
