@@ -314,9 +314,12 @@ def test_main_returns_nonzero_when_spreadsheet_not_found(monkeypatch):
 
 
 def test_main_returns_nonzero_when_worksheet_write_fails(monkeypatch):
-    _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
+    calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
     monkeypatch.setattr(gf, "write_data_to_sheet", lambda ws, data: False)
     assert gf.main() != 0
+    # The Apps Script must not run: it would re-sort the stale 'backend' rows
+    # into NewMain and republish the previous run's data as fresh.
+    assert calls["apps_script"] == 0
 
 
 def test_main_returns_nonzero_when_apps_script_fails(monkeypatch):

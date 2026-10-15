@@ -339,11 +339,19 @@ def main():
             if write_data_to_sheet(target_ws, routine_data):
                 logger.info("Spreadsheet synchronization successful.")
             else:
-                logger.error("Synchronization failed.")
-                exit_code = 1
+                # Bail out before creating/updating NewMain or triggering the Apps
+                # Script: the sort step reads 'backend' directly, so continuing here
+                # would republish the PREVIOUS run's rows as if they were fresh.
+                logger.error(
+                    "Synchronization failed. Skipping post-processing; '%s' and '%s' "
+                    "were left untouched.",
+                    TARGET_SHEET_NAME,
+                    NEW_MAIN_SHEET_NAME,
+                )
+                return 1
         else:
             logger.error("Target worksheet unreachable. Exiting.")
-            exit_code = 1
+            return 1
 
         # 3b. Ensure the 'NewMain' worksheet exists for Apps Script post-processing
         new_main_ws = get_or_create_worksheet(
@@ -355,7 +363,7 @@ def main():
         )
         if not new_main_ws:
             logger.error("NewMain worksheet unreachable. Exiting.")
-            exit_code = 1
+            return 1
 
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error("Spreadsheet '%s' not found.", SPREADSHEET_NAME)
