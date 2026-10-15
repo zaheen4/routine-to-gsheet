@@ -248,6 +248,25 @@ async def test_extract_dashboard_no_html_returns_empty(monkeypatch):
     assert await rs.extract_dashboard(tab, "B1") == []
 
 
+async def test_extract_dashboard_dumps_panel_html_when_nothing_parses(tmp_path, monkeypatch):
+    monkeypatch.setattr(rs, "TMP_OUTPUT_DIR", str(tmp_path))
+    markup = (
+        f'<table id="{rs.COURSE_TABLE_ID}">'
+        "<tr><th>Course Code</th></tr>"
+        "<tr><td>unknown layout</td></tr>"
+        "</table>"
+    )
+    tab = FakeTab()
+    tab._elements[TABLE_CSS] = FakeElement()
+    tab.eval_map[rs._dashboard_html_js()] = markup
+
+    assert await rs.extract_dashboard(tab, "B1") == []
+
+    dump = tmp_path / rs.ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL.format(section="B1")
+    assert dump.exists()
+    assert dump.read_text(encoding="utf-8") == markup
+
+
 # ----------------------------- scrape_dashboard_for_user -----------------------------
 
 async def test_scrape_dashboard_for_user_runs_full_flow(tmp_path, monkeypatch):

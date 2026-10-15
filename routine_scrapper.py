@@ -668,6 +668,10 @@ async def extract_dashboard(tab, section_label):
     """
     Reads the course list table HTML from the dashboard panel and persists the
     parsed entries to per-section CSV/JSON files.
+
+    When the table element is present but no rows parse, the raw panel HTML is
+    dumped to tmp/ so the failure (usually portal markup drift) is diagnosable
+    after the fact instead of only leaving "no valid entries" in the log.
     """
     table = await tab.select(
         f"#{UPDATE_PANEL_ID} #{COURSE_TABLE_ID}", timeout=COURSE_TABLE_WAIT_S
@@ -678,17 +682,40 @@ async def extract_dashboard(tab, section_label):
         )
 
     dashboard_html = await _read_dashboard_html(tab)
-    user_dashboard_data = []
+    if not dashboard_html:
+        logger.error(
+            "Update panel '%s' returned no HTML for section %s; cannot extract the course table.",
+            UPDATE_PANEL_ID,
+            section_label,
+        )
+        return []
 
-    if dashboard_html:
-        os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
-        user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
+    os.makedirs(TMP_OUTPUT_DIR, exist_ok=True)
+    user_dashboard_data = parse_attendance_dashboard_data(dashboard_html, section_label)
 
-        if user_dashboard_data:
-            dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
-            dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv, "csv")
-            save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
+    if not user_dashboard_data:
+        failure_path = os.path.join(
+            TMP_OUTPUT_DIR,
+            ATTENDANCE_DASHBOARD_HTML_FILENAME_TPL.format(section=section_label),
+        )
+        try:
+            with open(failure_path, "w", encoding="utf-8") as f:
+                f.write(dashboard_html)
+            logger.error(
+                "Parsed 0 course rows for section %s even though table '%s' is "
+                "present (likely portal markup drift). Raw panel HTML saved to %s.",
+                section_label,
+                COURSE_TABLE_ID,
+                failure_path,
+            )
+        except OSError:
+            logger.exception("Failed to save diagnostic HTML for section %s.", section_label)
+        return []
+
+    dash_csv = ATTENDANCE_DATA_CSV_FILENAME_TPL.format(section=section_label)
+    dash_json = ATTENDANCE_DATA_JSON_FILENAME_TPL.format(section=section_label)
+    save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_csv, "csv")
+    save_data_to_file(user_dashboard_data, TMP_OUTPUT_DIR, dash_json, "json")
 
     return user_dashboard_data
 
@@ -952,7 +979,15 @@ async def main():
     unique_routine = build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details)
 
     if not unique_routine:
-        logger.error("No valid routine entries filtered. Aborting export.")
+        logger.error(
+            "No valid routine entries left after merging: %d raw entries collected, "
+            "primary section '%s', secondary(lab) section '%s'. If the portal has "
+            "published the schedule, check the raw panel HTML in %s.",
+            len(all_collected_data),
+            primary_section,
+            secondary_section,
+            TMP_OUTPUT_DIR,
+        )
         sys.exit(1)
 
     logger.info("Exporting %d unique entries.", len(unique_routine))
