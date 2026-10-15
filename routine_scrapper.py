@@ -1039,6 +1039,19 @@ async def main():
         )
         sys.exit(1)
 
+    # One line that answers "did last night's run do anything?" from the
+    # journal, without having to open the sheet or the JSON file.
+    logger.info(
+        "Run summary: semester=%s | accounts=[%s] | %d scraped -> %d published | %s",
+        primary_semester,
+        ", ".join(
+            f"{a['id']} ({a['role']}, section {a['section_label']}): {a['entries']}"
+            for a in account_summaries
+        ),
+        len(all_collected_data),
+        len(unique_routine),
+        os.path.join(FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME),
+    )
     logger.info("Scraper workflow finished.")
 
 if __name__ == "__main__":

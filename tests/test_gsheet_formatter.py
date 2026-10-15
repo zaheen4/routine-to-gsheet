@@ -7,6 +7,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gsheet_formatter as gf
 
+# ----------------------------- credential path anchoring -----------------------------
+
+def test_credential_paths_are_anchored_to_the_project_root():
+    # Relative paths would resolve against the current working directory, so a
+    # run from anywhere other than the project root would look for (and fail to
+    # find) the token/keys somewhere else.
+    for path in (
+        gf.TOKEN_PICKLE_FILE,
+        gf.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
+        gf.GOOGLE_OAUTH_CLIENT_SECRET_FILE,
+        gf.SCRAPED_DATA_JSON_PATH,
+    ):
+        assert os.path.isabs(path), path
+        assert path.startswith(gf.BASE_DIR + os.sep), path
+
+
 # ----------------------------- load_routine_data -----------------------------
 
 def test_load_routine_data_valid(tmp_path):

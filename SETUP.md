@@ -78,6 +78,10 @@ In the [Google Cloud Console](https://console.cloud.google.com/), create a proje
 5. Click **Deploy**, then **copy the Script ID** from the deployment dialog.
 6. Save it as `APP_SCRIPT_ID` in your `.env` (see [Phase B](#phase-b--local-setup)).
 
+> **Redeploy after editing `Code.gs`:** a deployment pins a version, so changes to the file do nothing until you go to **Deploy > Manage deployments**, click the edit (pencil) icon, set **Version: New version**, and click **Deploy**.
+>
+> **Optional live sorting:** the Python pipeline calls `triggerSortFromPython()` itself, so no trigger is needed. If you also want the sheet to re-sort while you edit `backend` by hand, add an installable trigger (**Triggers > Add trigger**, function `sortBackendData`, event source *From spreadsheet*, event type *On edit*).
+
 ---
 
 ## Phase B — Local Setup
@@ -161,6 +165,8 @@ SPREADSHEET_NAME=CSE-03_B_ClassRoutine
 TARGET_SHEET_NAME=backend
 APP_SCRIPT_ID=your_script_id_from_phase_A6
 LOG_LEVEL=INFO
+# Optional: refuse to publish scraper output older than N hours (default 48).
+#MAX_DATA_AGE_HOURS=48
 ```
 
 > `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you also rename the tabs in `apps_script/Code.gs`.
@@ -200,7 +206,8 @@ This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routin
 
 - [ ] `backend` tab contains the raw routine rows.
 - [ ] `NewMain` tab contains the sorted routine, and headers (if freshly created) at `B3:I3`.
-- [ ] `NewMain` shows a current **Last Updated** timestamp (bottom-right area).
+- [ ] `NewMain` shows a current **Last Updated** timestamp *below* the last routine row (the footer is written two rows under the data, column B) — not at a fixed `I24`.
+- [ ] Both stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without re-sorting) on missing/stale/undated data, an auth failure, a failed `backend` write, or a failed Apps Script trigger. Check the log line above the failure.
 
 ---
 
@@ -278,9 +285,12 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 | Scraper aborts with **"No Chrome binary found"** | Chrome/Chromium not installed or not on PATH | Install Chrome or Chromium, or set `CHROME_BINARY_PATH` in `.env` to a specific binary. |
 | `scripts/run_routine.sh` exits immediately with **xvfb-run not installed** | The Linux runner now requires a virtual X display | Install the Xvfb package for your distro (the message prints the exact command). |
 | Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
-| `No valid routine entries filtered` | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
+| Formatter refuses to publish and the log says the data is **stale** or has **no usable `generated_at`** | The scraper's output is directly from an older run (or is a pre-manifest file) | Re-run `routine_scrapper.py`. If you just upgraded and the JSON predates the run manifest, the formatter will refuse it until a fresh scrape replaces it. `MAX_DATA_AGE_HOURS=0` in `.env` disables the check. |
+| Scraper aborts with **"No valid routine entries left after merging"** | Portal markup changed, or the semester isn't published yet | If the schedule *is* live, inspect the raw panel HTML the scraper dumped to `tmp/` (the log line names the exact file). |
+| `No valid routine entries` (older wording) / `backend` is empty | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
 | A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
-| Formatter warns `APP_SCRIPT_ID is not configured` | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
+| Formatter fails with **`APP_SCRIPT_ID is not configured`** | `.env` missing or still has the placeholder | Set `APP_SCRIPT_ID` from Phase A6. |
+| **Last Updated** stamp is missing or sits next to the data | `Code.gs` was edited but the deployment was not updated (a deployment pins a version) | **Deploy > Manage deployments >** edit **> Version: New version**. |
 
 ---
 
@@ -288,7 +298,7 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 
 You only need to repeat:
 
-1. Clone + venv + `pip install -r requirements.txt`.
+1. Clone + venv + `pip install -r requirements.txt` (add `requirements-dev.txt` if you want the tests/linter and `scripts/verify.sh`).
 2. Install Chrome/Chromium (+ Xvfb on Linux for invisible scheduled runs).
 3. Copy these gitignored files from your old machine:
    - `configs_to_edit/ucam_login_credentials.json`

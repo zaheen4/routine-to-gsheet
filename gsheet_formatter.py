@@ -38,9 +38,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPED_DATA_JSON_PATH = os.path.join(BASE_DIR, "output_of_fetched_routine", "final_combined_routine.json")
 
 # [Google Cloud Platform Configuration]
-GOOGLE_KEYS_DIR = 'google_cloud_keys'
-GOOGLE_SERVICE_ACCOUNT_KEY_FILE = os.path.join(GOOGLE_KEYS_DIR, 'service_account_key.json')
-GOOGLE_OAUTH_CLIENT_SECRET_FILE = os.path.join(GOOGLE_KEYS_DIR, 'oauth_client_secret.json')
+# Anchored to BASE_DIR: the formatter is run from the project root by
+# run_routine.sh and by the scheduler units, but a relative path here would
+# silently point at a *different* (missing) credential file if it were ever run
+# from elsewhere.
+GOOGLE_KEYS_DIR = "google_cloud_keys"
+GOOGLE_SERVICE_ACCOUNT_KEY_FILE = os.path.join(BASE_DIR, GOOGLE_KEYS_DIR, "service_account_key.json")
+GOOGLE_OAUTH_CLIENT_SECRET_FILE = os.path.join(BASE_DIR, GOOGLE_KEYS_DIR, "oauth_client_secret.json")
 
 # Scopes for Apps Script and Spreadsheet API access
 APP_SCRIPT_SCOPES = [
@@ -48,7 +52,7 @@ APP_SCRIPT_SCOPES = [
     'https://www.googleapis.com/auth/script.external_request',
     'https://www.googleapis.com/auth/spreadsheets'
 ]
-TOKEN_PICKLE_FILE = 'token.pickle'
+TOKEN_PICKLE_FILE = os.path.join(BASE_DIR, "token.pickle")
 
 # Credential files are created owner-readable/writable only.
 PRIVATE_FILE_MODE = 0o600
@@ -482,6 +486,17 @@ def main():
             exit_code = 1
 
     if exit_code == 0:
+        # One line that answers "did last night's run do anything?" from the
+        # journal, without opening the spreadsheet.
+        logger.info(
+            "Run summary: %d entries (%.1f h old) | '%s' -> %s('%s') -> '%s'",
+            len(routine_data),
+            age_hours,
+            TARGET_SHEET_NAME,
+            FUNCTION_NAME,
+            NEW_MAIN_SHEET_NAME,
+            SPREADSHEET_NAME,
+        )
         logger.info("Workflow execution finished.")
     else:
         logger.error("Workflow execution finished with errors (exit %d).", exit_code)

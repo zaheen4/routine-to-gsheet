@@ -4,7 +4,12 @@
 // 'NewMain', stamping a "Last Updated" timestamp.
 //
 // Deploy this as an API Executable and put the deployment's Script ID in
-// your .env as APP_SCRIPT_ID.
+// your .env as APP_SCRIPT_ID. The Python pipeline calls triggerSortFromPython()
+// directly via the Apps Script API, so no trigger needs to be installed.
+//
+// Optional: to also re-sort live while you edit 'backend' by hand, add an
+// installable "On edit" trigger (Triggers > Add trigger > sortBackendData >
+// From spreadsheet > On edit). The e-guard below is only used by that path.
 
 const SIGNATURE = "Made by Z  :)";
 
@@ -13,6 +18,9 @@ function triggerSortFromPython() {
 }
 
 function sortBackendData(e) {
+  // Only reached when invoked as an installable onEdit trigger: ignore edits
+  // made on any sheet other than 'backend'. The Python path passes no event (e
+  // is null) and always sorts.
   if (e && e.source.getActiveSheet().getName() !== "backend") return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();

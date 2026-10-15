@@ -14,7 +14,7 @@ An automated solution for scraping class schedules from the UCAM web portal and 
 * **Automated Extraction**: Authenticates with the UCAM portal to retrieve schedule data.
 * **Multi-User Consolidation**: Merges schedules from one or more accounts (exactly one `primary`, the rest `lab_merge` for lab-section synchronization).
 * **Data Enrichment**: Integrates teacher contact details from local configuration files.
-* **Flexible Browser Support**: Compatible with both Firefox and Google Chrome.
+* **Chrome/Chromium Only**: Drives Google Chrome or Chromium over the DevTools protocol (Firefox is not supported).
 * **Sheets Integration**: Uploads raw data and triggers Google Apps Script for post-processing.
 * **Advanced Processing**: Normalizes time formats to 12-hour display, sorts chronologically, and generates a "Last Updated" timestamp.
 
@@ -174,4 +174,4 @@ It verifies the config files, that your spreadsheet opens with the service accou
 
 ## Troubleshooting
 
-A troubleshooting table (spreadsheet not shared, consent blocked, 7-day token expiry, ChromeDriver version mismatch, and more) lives in **SETUP.md**.
+A troubleshooting table (spreadsheet not shared, consent blocked, 7-day token expiry, and more) lives in **SETUP.md**.
