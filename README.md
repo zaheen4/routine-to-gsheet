@@ -39,7 +39,9 @@ project_root/
 ├── SETUP.md                    # Step-by-step bring-up guide
 ├── .env.example                # Environment variable overrides template
 ├── apps_script/                # Google Apps Script source
-│   └── Code.gs                 # Paste into Extensions > Apps Script
+│   ├── Code.gs                 # Paste into Extensions > Apps Script
+│   └── tests/                  # Node test suite for Code.gs
+├── browser_lookup.py           # Shared Chrome/Chromium binary discovery
 ├── tests/                      # Unit test suite (pytest)
 ├── configs_to_edit/            # User configuration directory
 │   ├── ucam_login_credentials.json.example.txt
@@ -118,6 +120,12 @@ Run the unit test suite (covers dashboard parsing, merge logic, browser workflow
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
+```
+
+The Apps Script in `apps_script/Code.gs` has its own test suite (sorting order, 12-hour normalization, and the "Last Updated" stamp placement), run with Node's built-in test runner:
+
+```bash
+node --test "apps_script/tests/**/*.test.js"
 ```
 
 ---
