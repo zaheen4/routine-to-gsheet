@@ -1,6 +1,5 @@
 [Unit]
 Description=Run UCAM Routine Automation weekly
-Requires=routine-automation.service
 
 [Timer]
 Unit=routine-automation.service

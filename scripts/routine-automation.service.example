@@ -1,5 +1,8 @@
 [Unit]
 Description=UCAM Routine Scraper and GSheet Formatter
+# Wait for a working network before scraping (ordering only; the unit still
+# starts immediately if network-online.target is not part of the transaction).
+After=network-online.target
 # Give up after 3 failed starts within an hour so a persistent
 # Cloudflare block or portal outage does not trigger a retry loop.
 StartLimitIntervalSec=3600
