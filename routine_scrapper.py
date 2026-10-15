@@ -10,6 +10,7 @@ import os
 import csv
 import re
 import shutil
+from datetime import datetime, timezone
 
 from config import HEADLESS, CHROME_BINARY_PATH, setup_logging
 
@@ -163,35 +164,101 @@ def parse_attendance_dashboard_data(html_content, user_section_label_tag):
 def save_data_to_file(data, output_dir, filename, file_type='csv', fieldnames=None):
     """
     Persists data to disk in the specified format.
+
+    The write is atomic: content lands in a temporary sibling file which is
+    only renamed over the target once it is fully flushed, so an interrupted
+    run can never leave a truncated CSV/JSON for the next stage to read.
+
+    Returns:
+        bool: True when the file was written, False otherwise.
     """
-    if not data: return
-    os.makedirs(output_dir, exist_ok=True)
+    if not data:
+        return False
+
     output_file_path = os.path.join(output_dir, filename)
+    tmp_file_path = f"{output_file_path}.tmp"
+
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        logger.error("Failed to prepare output directory '%s': %s", output_dir, e)
+        return False
 
     if file_type == 'csv':
         if not isinstance(data, list) or not data or not isinstance(data[0], dict):
             logger.error("Invalid CSV data format for %s", filename)
-            return
+            return False
 
         if fieldnames is None:
             fieldnames = list(data[0].keys())
 
         try:
-            with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
+            with open(tmp_file_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                 writer.writeheader()
                 writer.writerows(data)
-            logger.info("Exported CSV: %s", output_file_path)
-        except Exception as e:
-            logger.error("Failed to export CSV: %s", e)
-            
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as e:
+            logger.error("Failed to export CSV '%s': %s", output_file_path, e)
+            _discard_file(tmp_file_path)
+            return False
+
     elif file_type == 'json':
         try:
-            with open(output_file_path, 'w', encoding='utf-8') as f:
+            with open(tmp_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            logger.info("Exported JSON: %s", output_file_path)
-        except Exception as e:
-            logger.error("Failed to export JSON: %s", e)
+                f.flush()
+                os.fsync(f.fileno())
+        except (OSError, TypeError, ValueError) as e:
+            logger.error("Failed to export JSON '%s': %s", output_file_path, e)
+            _discard_file(tmp_file_path)
+            return False
+
+    else:
+        logger.error("Unsupported file type '%s' for %s", file_type, filename)
+        return False
+
+    try:
+        os.replace(tmp_file_path, output_file_path)
+    except OSError as e:
+        logger.error("Failed to finalize '%s': %s", output_file_path, e)
+        _discard_file(tmp_file_path)
+        return False
+
+    logger.info("Exported %s: %s", file_type.upper(), output_file_path)
+    return True
+
+
+def _discard_file(path):
+    """Best-effort removal of a temporary file; never raises."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def invalidate_previous_output(output_dir):
+    """
+    Removes the previous run's combined output before a new scrape starts.
+
+    The formatter publishes whatever routine JSON it finds, so a run that dies
+    before writing (SIGKILL, disk full, systemd timeout) must not leave last
+    week's file on disk where it would look like this week's data. Per-section
+    dumps in tmp/ are kept for post-mortem debugging.
+    """
+    removed = []
+    for filename in (FINAL_ROUTINE_JSON_FILENAME, FINAL_ROUTINE_CSV_FILENAME):
+        path = os.path.join(output_dir, filename)
+        try:
+            os.remove(path)
+            removed.append(filename)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.error("Could not remove stale output '%s': %s", path, e)
+    if removed:
+        logger.info("Invalidated previous output: %s", ", ".join(removed))
 
 
 # [Data Merging Functions]
@@ -629,6 +696,10 @@ async def extract_dashboard(tab, section_label):
 async def scrape_dashboard_for_user(tab, user_creds, common_urls):
     """
     Executes the scraping workflow for a specific user profile.
+
+    Returns:
+        tuple(list, str): the parsed dashboard entries and the semester label
+        that was selected on the portal.
     """
     section_label = user_creds['section_label']
     logger.info("--- Processing User Profile: %s (%s) ---", user_creds['id'], section_label)
@@ -642,8 +713,11 @@ async def scrape_dashboard_for_user(tab, user_creds, common_urls):
         logger.error("Authentication Failure: %s", type(e).__name__)
         raise
 
-    await select_semester(tab, common_urls['attendance_dashboard_url'], section_label)
-    return await extract_dashboard(tab, section_label)
+    semester = await select_semester(
+        tab, common_urls['attendance_dashboard_url'], section_label
+    )
+    entries = await extract_dashboard(tab, section_label)
+    return entries, semester
 
 CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
 
@@ -740,8 +814,12 @@ async def scrape_account_with_retries(profile, common_urls):
     """
     Runs the full scraping workflow for one account, retrying transient
     failures (CDP node races, network blips, timeouts) with a fresh browser
-    session per attempt. Returns the collected dashboard entries on success
-    and re-raises the last error once all attempts are exhausted.
+    session per attempt.
+
+    Returns:
+        tuple(list, str): the collected dashboard entries and the selected
+        semester label. Re-raises the last error once all attempts are
+        exhausted.
     """
     last_exc = None
     for attempt in range(1, ACCOUNT_RETRY_ATTEMPTS + 1):
@@ -784,7 +862,25 @@ async def scrape_account_with_retries(profile, common_urls):
                 except Exception:
                     logger.exception("Failed to stop browser for %s.", profile['id'])
                 logger.info("Session closed for %s.", profile['id'])
-    raise last_exc
+    raise last_exc or RuntimeError("no scrape attempts were made")
+
+
+def build_run_output(entries, account_summaries, primary_semester, generated_at=None):
+    """
+    Builds the run manifest written to FINAL_ROUTINE_JSON_FILENAME.
+
+    The manifest carries provenance (when, from which semester, which accounts)
+    so the formatter can refuse to publish stale data and so a "wrong semester"
+    run is diagnosable after the fact.
+    """
+    return {
+        "generated_at": generated_at or datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "semester": primary_semester,
+        "accounts": account_summaries,
+        "entries": entries,
+    }
 
 
 # [Main Workflow]
@@ -801,25 +897,42 @@ async def main():
         )
         sys.exit(1)
 
+    # Drop the previous run's output now: if this run dies before writing (kill,
+    # disk full, timeout), the formatter must not find last week's data and
+    # republish it as this week's routine.
+    invalidate_previous_output(FORMATTED_OUTPUT_DIR)
+
     teacher_details = load_teacher_details_from_file(TEACHER_DETAILS_FILE)
     all_collected_data = []
     failed_accounts = []
+    account_summaries = []
+    primary_semester = None
 
     common_urls = {
         "login_url": credentials["login_url"],
         "attendance_dashboard_url": credentials["attendance_dashboard_url"]
     }
 
-    for profile in credentials["users"]:
+    for index, profile in enumerate(credentials["users"]):
         try:
-            user_data = await scrape_account_with_retries(profile, common_urls)
-            all_collected_data.extend(user_data)
+            user_data, semester = await scrape_account_with_retries(profile, common_urls)
         except Exception as e:
             logger.error(
                 "Account %s failed after %d attempt(s): %s",
                 profile['id'], ACCOUNT_RETRY_ATTEMPTS, e,
             )
             failed_accounts.append(profile['id'])
+            continue
+
+        all_collected_data.extend(user_data)
+        account_summaries.append({
+            "id": profile["id"],
+            "section_label": profile.get("section_label"),
+            "semester": semester,
+            "entries": len(user_data),
+        })
+        if index == 0:
+            primary_semester = semester
 
     if failed_accounts:
         logger.error(
@@ -838,13 +951,29 @@ async def main():
 
     unique_routine = build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details)
 
-    if unique_routine:
-        logger.info("Exporting %d unique entries.", len(unique_routine))
-        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
-                          fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"])
-        save_data_to_file(unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json")
-    else:
-        logger.warning("No valid routine entries filtered.")
+    if not unique_routine:
+        logger.error("No valid routine entries filtered. Aborting export.")
+        sys.exit(1)
+
+    logger.info("Exporting %d unique entries.", len(unique_routine))
+    if not save_data_to_file(
+        unique_routine, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_CSV_FILENAME, "csv",
+        fieldnames=["CourseCode", "CourseTitle", "Teacher", "TeacherPhone", "TeacherEmail", "Day", "Room", "TimeSlot", "Section"],
+    ):
+        # The CSV is a human-readable convenience artifact; the JSON is the
+        # contract the formatter consumes, so a CSV failure is not fatal.
+        logger.warning("Could not write %s (non-fatal).", FINAL_ROUTINE_CSV_FILENAME)
+
+    run_output = build_run_output(
+        unique_routine, account_summaries, primary_semester
+    )
+    if not save_data_to_file(
+        run_output, FORMATTED_OUTPUT_DIR, FINAL_ROUTINE_JSON_FILENAME, "json"
+    ):
+        logger.error(
+            "Failed to write %s. Aborting so the formatter cannot re-sync stale data.",
+            FINAL_ROUTINE_JSON_FILENAME,
+        )
         sys.exit(1)
 
     logger.info("Scraper workflow finished.")

@@ -5,11 +5,18 @@ import pickle
 import sys
 import traceback
 import logging
+from datetime import datetime, timezone
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
-from config import SPREADSHEET_NAME, TARGET_SHEET_NAME, APP_SCRIPT_ID, setup_logging
+from config import (
+    SPREADSHEET_NAME,
+    TARGET_SHEET_NAME,
+    APP_SCRIPT_ID,
+    MAX_DATA_AGE_HOURS,
+    setup_logging,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -48,28 +55,67 @@ TOKEN_PICKLE_FILE = 'token.pickle'
 def load_routine_data(json_file_path):
     """
     Loads the processed routine data from the generated JSON file.
-    
-    Args:
-        json_file_path (str): Path to the JSON source file.
-        
+
+    Two payload shapes are accepted so the two pipeline stages can be upgraded
+    independently: the current run manifest
+    ({"generated_at", "semester", "accounts", "entries"}) and the legacy bare
+    list of routine entries.
+
     Returns:
-        list: A list of routine entries or an empty list if loading fails.
+        tuple(list, str | None): (entries, generated_at). Returns ([], None)
+        when the file is missing, unreadable, or malformed; a legacy list
+        payload also yields generated_at=None because its age is unknowable.
     """
     logger.info("Loading routine data from: %s", json_file_path)
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        logger.info("Successfully loaded %d routine entries.", len(data))
-        return data
     except FileNotFoundError:
         logger.error("Error: Source file '%s' not found.", json_file_path)
-        return []
+        return [], None
     except json.JSONDecodeError:
         logger.error("Invalid JSON format in '%s'.", json_file_path)
-        return []
+        return [], None
     except Exception as e:
         logger.error("Unexpected error in load_routine_data: %s", e)
-        return []
+        return [], None
+
+    if isinstance(data, dict):
+        entries = data.get("entries")
+        generated_at = data.get("generated_at")
+        if not isinstance(entries, list):
+            logger.error("'%s' has no 'entries' list.", json_file_path)
+            return [], None
+        logger.info(
+            "Successfully loaded %d routine entries (generated_at=%s, semester=%s).",
+            len(entries), generated_at, data.get("semester"),
+        )
+        return entries, generated_at
+
+    if isinstance(data, list):
+        logger.info("Successfully loaded %d routine entries (legacy list payload).", len(data))
+        return data, None
+
+    logger.error("Unsupported JSON payload in '%s'.", json_file_path)
+    return [], None
+
+
+def data_age_hours(generated_at):
+    """
+    Returns the age of a run manifest in hours, or None when unusable.
+
+    Args:
+        generated_at (str | None): ISO-8601 UTC stamp as written by the scraper.
+    """
+    if not generated_at:
+        return None
+    try:
+        stamp = datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        logger.error("Unparseable 'generated_at' value: %r", generated_at)
+        return None
+    return (datetime.now(timezone.utc) - stamp.replace(tzinfo=timezone.utc)).total_seconds() / 3600.0
+
 
 def authenticate_gsheet(service_account_json_path):
     """
@@ -310,10 +356,33 @@ def main():
     logger.info("Initializing Google Sheets formatting workflow...")
 
     # 1. Load data source
-    routine_data = load_routine_data(SCRAPED_DATA_JSON_PATH)
+    routine_data, generated_at = load_routine_data(SCRAPED_DATA_JSON_PATH)
     if not routine_data:
         logger.error("Data source empty. Aborting sync.")
         return 1
+
+    # 1b. Refuse to publish data that is not provably fresh: a scrape that died
+    # before writing must not let the previous run's rows reach the sheet.
+    age_hours = data_age_hours(generated_at)
+    if age_hours is None:
+        logger.error(
+            "Data source has no usable 'generated_at' timestamp, so its freshness "
+            "cannot be verified. Re-run routine_scrapper.py to regenerate '%s'.",
+            SCRAPED_DATA_JSON_PATH,
+        )
+        return 1
+    if MAX_DATA_AGE_HOURS > 0 and age_hours > MAX_DATA_AGE_HOURS:
+        logger.error(
+            "Refusing to publish stale data: generated %.1f hours ago (limit %d). "
+            "Run routine_scrapper.py first.",
+            age_hours,
+            MAX_DATA_AGE_HOURS,
+        )
+        return 1
+    if MAX_DATA_AGE_HOURS > 0:
+        logger.info("Data is %.1f hours old (limit %d).", age_hours, MAX_DATA_AGE_HOURS)
+    else:
+        logger.warning("Data age check disabled (MAX_DATA_AGE_HOURS=0).")
 
     # 2. Authenticate and establish connection
     gc = authenticate_gsheet(GOOGLE_SERVICE_ACCOUNT_KEY_FILE)

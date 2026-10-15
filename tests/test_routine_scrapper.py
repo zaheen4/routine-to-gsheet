@@ -143,7 +143,7 @@ def test_parse_dashboard_row_without_day_keeps_other_slot():
 
 def test_save_csv(tmp_path):
     data = [{"A": 1, "B": 2}, {"A": 3, "B": 4}]
-    rs.save_data_to_file(data, str(tmp_path), "out.csv", "csv", fieldnames=["A", "B"])
+    assert rs.save_data_to_file(data, str(tmp_path), "out.csv", "csv", fieldnames=["A", "B"]) is True
     out = tmp_path / "out.csv"
     assert out.exists()
     assert out.read_text(encoding="utf-8").splitlines()[0] == "A,B"
@@ -151,13 +151,59 @@ def test_save_csv(tmp_path):
 
 def test_save_json(tmp_path):
     data = [{"A": 1, "B": 2}]
-    rs.save_data_to_file(data, str(tmp_path), "out.json", "json")
+    assert rs.save_data_to_file(data, str(tmp_path), "out.json", "json") is True
     assert json.loads((tmp_path / "out.json").read_text(encoding="utf-8")) == data
 
 
+def test_save_leaves_no_temporary_file(tmp_path):
+    rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.json", "json")
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_save_empty_data_no_file(tmp_path):
-    rs.save_data_to_file([], str(tmp_path), "none.csv", "csv")
+    assert rs.save_data_to_file([], str(tmp_path), "none.csv", "csv") is False
     assert not (tmp_path / "none.csv").exists()
+
+
+def test_save_reports_failure_when_target_unwritable(tmp_path):
+    # A file where the output directory should be makes makedirs fail.
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    assert rs.save_data_to_file([{"A": 1}], str(blocker), "out.json", "json") is False
+
+
+def test_save_reports_failure_and_keeps_previous_file(tmp_path):
+    good = tmp_path / "out.json"
+    rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.json", "json")
+    original = good.read_text(encoding="utf-8")
+
+    class Unserializable:
+        pass
+
+    assert rs.save_data_to_file(
+        {"bad": Unserializable()}, str(tmp_path), "out.json", "json"
+    ) is False
+    assert good.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_unsupported_file_type(tmp_path):
+    assert rs.save_data_to_file([{"A": 1}], str(tmp_path), "out.txt", "xml") is False
+
+
+# ----------------------------- invalidate_previous_output -----------------------------
+
+def test_invalidate_previous_output_removes_files(tmp_path):
+    (tmp_path / rs.FINAL_ROUTINE_JSON_FILENAME).write_text("{}", encoding="utf-8")
+    (tmp_path / rs.FINAL_ROUTINE_CSV_FILENAME).write_text("x", encoding="utf-8")
+    rs.invalidate_previous_output(str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalidate_previous_output_tolerates_missing_files(tmp_path):
+    rs.invalidate_previous_output(str(tmp_path))  # must not raise
+    assert list(tmp_path.iterdir()) == []
+
 
 
 # ----------------------------- _schedule_entry -----------------------------

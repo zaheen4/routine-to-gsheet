@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -15,23 +16,73 @@ def test_load_routine_data_valid(tmp_path):
     data = [{"CourseCode": "CSE-3201", "Day": "Sun"}]
     path = tmp_path / "routine.json"
     path.write_text(json.dumps(data), encoding="utf-8")
-    assert gf.load_routine_data(str(path)) == data
+    assert gf.load_routine_data(str(path)) == (data, None)
+
+
+def test_load_routine_data_manifest(tmp_path):
+    payload = {
+        "generated_at": "2026-10-15T10:00:00Z",
+        "semester": "Fall 2026",
+        "accounts": [],
+        "entries": [{"CourseCode": "CSE-3201"}],
+    }
+    path = tmp_path / "routine.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert gf.load_routine_data(str(path)) == (
+        payload["entries"], payload["generated_at"])
+
+
+def test_load_routine_data_manifest_without_entries(tmp_path):
+    path = tmp_path / "routine.json"
+    path.write_text(json.dumps({"generated_at": "2026-10-15T10:00:00Z"}), encoding="utf-8")
+    assert gf.load_routine_data(str(path)) == ([], None)
+
+
+def test_load_routine_data_unsupported_payload(tmp_path):
+    path = tmp_path / "routine.json"
+    path.write_text(json.dumps("nope"), encoding="utf-8")
+    assert gf.load_routine_data(str(path)) == ([], None)
 
 
 def test_load_routine_data_missing_file(tmp_path):
-    assert gf.load_routine_data(str(tmp_path / "nope.json")) == []
+    assert gf.load_routine_data(str(tmp_path / "nope.json")) == ([], None)
 
 
 def test_load_routine_data_invalid_json(tmp_path):
     path = tmp_path / "routine.json"
     path.write_text("not json", encoding="utf-8")
-    assert gf.load_routine_data(str(path)) == []
+    assert gf.load_routine_data(str(path)) == ([], None)
 
 
 def test_load_routine_data_empty_list(tmp_path):
     path = tmp_path / "routine.json"
     path.write_text("[]", encoding="utf-8")
-    assert gf.load_routine_data(str(path)) == []
+    assert gf.load_routine_data(str(path)) == ([], None)
+
+
+# ----------------------------- data_age_hours -----------------------------
+
+def test_data_age_hours_none_without_timestamp():
+    assert gf.data_age_hours(None) is None
+    assert gf.data_age_hours("") is None
+
+
+def test_data_age_hours_unparseable():
+    assert gf.data_age_hours("last tuesday") is None
+
+
+def test_data_age_hours_fresh():
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    age = gf.data_age_hours(now)
+    assert age is not None
+    assert age < 0.1
+
+
+def test_data_age_hours_old():
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    age = gf.data_age_hours(stamp)
+    assert age > 71
+
 
 
 # ----------------------------- combine_contact_info -----------------------------
@@ -267,6 +318,14 @@ class _FakeGC:
         return self._spreadsheet
 
 
+# Sentinel: "use the current UTC time" for generated_at.
+_NOW = object()
+
+
+def _stale_timestamp(hours):
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _main_spreadsheet():
     """A spreadsheet that already owns both worksheets the workflow touches."""
     return _FakeSpreadsheet(existing={
@@ -276,13 +335,18 @@ def _main_spreadsheet():
 
 
 def _patch_main(monkeypatch, data=None, gc=None, script_ok=True,
-                app_script_id="script-id"):
+                app_script_id="script-id", generated_at=_NOW, max_age=48):
     """Wire main()'s external dependencies to fakes; returns call counters."""
     calls = {"apps_script": 0}
-    monkeypatch.setattr(
-        gf, "load_routine_data", lambda path: [_entry()] if data is None else data)
+    entries = [_entry()] if data is None else data
+    stamp = (
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if generated_at is _NOW else generated_at
+    )
+    monkeypatch.setattr(gf, "load_routine_data", lambda path: (entries, stamp))
     monkeypatch.setattr(gf, "authenticate_gsheet", lambda path: gc)
     monkeypatch.setattr(gf, "APP_SCRIPT_ID", app_script_id)
+    monkeypatch.setattr(gf, "MAX_DATA_AGE_HOURS", max_age)
 
     def fake_call(**kwargs):
         calls["apps_script"] += 1
@@ -335,3 +399,47 @@ def test_main_returns_nonzero_when_app_script_id_is_placeholder(monkeypatch):
     )
     assert gf.main() != 0
     assert calls["apps_script"] == 0
+
+
+def test_main_returns_nonzero_when_data_is_stale(monkeypatch):
+    calls = _patch_main(
+        monkeypatch,
+        gc=_FakeGC(_main_spreadsheet()),
+        generated_at=_stale_timestamp(72),
+    )
+    assert gf.main() != 0
+    assert calls["apps_script"] == 0
+
+
+def test_main_returns_nonzero_when_data_has_no_timestamp(monkeypatch):
+    # A legacy bare-list payload carries no generated_at, so freshness is
+    # unverifiable - refuse rather than republish data of unknown age.
+    calls = _patch_main(
+        monkeypatch,
+        gc=_FakeGC(_main_spreadsheet()),
+        generated_at=None,
+    )
+    assert gf.main() != 0
+    assert calls["apps_script"] == 0
+
+
+def test_main_publishes_fresh_data_within_limit(monkeypatch):
+    calls = _patch_main(
+        monkeypatch,
+        gc=_FakeGC(_main_spreadsheet()),
+        generated_at=_stale_timestamp(2),
+    )
+    assert gf.main() == 0
+    assert calls["apps_script"] == 1
+
+
+def test_main_age_check_can_be_disabled(monkeypatch):
+    calls = _patch_main(
+        monkeypatch,
+        gc=_FakeGC(_main_spreadsheet()),
+        generated_at=_stale_timestamp(24 * 30),
+        max_age=0,
+    )
+    assert gf.main() == 0
+    assert calls["apps_script"] == 1
+
