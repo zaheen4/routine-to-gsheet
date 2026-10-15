@@ -435,72 +435,30 @@ def test_build_final_routine_no_warning_when_all_known(caplog):
 
 
 # ----------------------------- Chrome binary resolution -----------------------------
+# The detection logic itself lives in browser_lookup.py (tests/test_browser_lookup.py);
+# these check that the scraper wires its CHROME_BINARY_PATH override through.
 
-def test_get_chrome_executable_uses_env_override(tmp_path, monkeypatch):
-    fake = tmp_path / "chrome"
-    fake.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", str(fake))
-    assert rs.get_chrome_executable() == str(fake)
+def test_get_chrome_executable_passes_config_override(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_resolve(env_override=None):
+        captured["env_override"] = env_override
+        return "resolved"
+
+    monkeypatch.setattr(rs, "resolve_chrome_executable", fake_resolve)
+    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", "/opt/chrome")
+    assert rs.get_chrome_executable() == "resolved"
+    assert captured["env_override"] == "/opt/chrome"
 
 
-def test_get_chrome_executable_env_override_missing_falls_back(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", "/nonexistent/chrome")
-    monkeypatch.setattr(rs.shutil, "which", lambda name: "/usr/bin/" + name)
-    assert rs.get_chrome_executable() == "/usr/bin/google-chrome-stable"
+def test_get_chrome_executable_without_override(monkeypatch):
+    captured = {}
 
+    def fake_resolve(env_override=None):
+        captured["env_override"] = env_override
+        return "resolved"
 
-def test_get_chrome_executable_prefers_google_chrome_stable(monkeypatch):
+    monkeypatch.setattr(rs, "resolve_chrome_executable", fake_resolve)
     monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    available = {"chromium": "/usr/bin/chromium", "google-chrome-stable": "/usr/bin/google-chrome-stable"}
-    monkeypatch.setattr(rs.shutil, "which", lambda name: available.get(name))
-    assert rs.get_chrome_executable() == "/usr/bin/google-chrome-stable"
-
-
-def test_get_chrome_executable_no_binary(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
-    assert rs.get_chrome_executable() is None
-
-
-def test_platform_chrome_candidates_macos(monkeypatch):
-    monkeypatch.setattr(rs.sys, "platform", "darwin")
-    candidates = rs._platform_chrome_candidates()
-    assert "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" in candidates
-    assert "/Applications/Chromium.app/Contents/MacOS/Chromium" in candidates
-
-
-def test_platform_chrome_candidates_windows(monkeypatch):
-    monkeypatch.setattr(rs.os, "name", "nt")
-    for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\u\\AppData\\Local")
-    candidates = rs._platform_chrome_candidates()
-    assert os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe") in candidates
-    assert os.path.join("C:\\Users\\u\\AppData\\Local", "Google", "Chrome", "Application", "chrome.exe") in candidates
-
-
-def test_platform_chrome_candidates_linux_empty(monkeypatch):
-    monkeypatch.setattr(rs.sys, "platform", "linux")
-    assert rs._platform_chrome_candidates() == []
-
-
-def test_platform_chrome_candidates_windows_dedupes(monkeypatch):
-    monkeypatch.setattr(rs.os, "name", "nt")
-    monkeypatch.delenv("ProgramW6432", raising=False)
-    monkeypatch.delenv("LOCALAPPDATA", raising=False)
-    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-    monkeypatch.setenv("ProgramFiles", "C:\\Program Files")
-    monkeypatch.setenv("ProgramW6432", "C:\\Program Files")
-    candidates = rs._platform_chrome_candidates()
-    expected = os.path.join("C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")
-    assert candidates.count(expected) == 1
-
-
-def test_get_chrome_executable_uses_well_known_path(monkeypatch):
-    monkeypatch.setattr(rs, "CHROME_BINARY_PATH", None)
-    monkeypatch.setattr(rs.shutil, "which", lambda name: None)
-    fake = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    monkeypatch.setattr(rs, "_platform_chrome_candidates", lambda: [fake])
-    monkeypatch.setattr(rs.os.path, "isfile", lambda p: p == fake)
-    assert rs.get_chrome_executable() == fake
+    assert rs.get_chrome_executable() == "resolved"
+    assert captured["env_override"] is None

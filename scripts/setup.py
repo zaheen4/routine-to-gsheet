@@ -14,6 +14,14 @@ import shutil
 import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from browser_lookup import (  # noqa: E402  (needs PROJECT_ROOT on sys.path first)
+    CHROME_BINARY_NAMES as CHROME_CANDIDATES,
+    get_chrome_executable,
+)
+from config import CHROME_BINARY_PATH  # noqa: E402
 
 # Real file -> template it is copied from (only when the real file is missing).
 TEMPLATE_MAP = {
@@ -59,37 +67,6 @@ CHROME_CANDIDATES = [
     "chromium",
     "chrome",
 ]
-
-
-def _platform_chrome_candidates():
-    """
-    Well-known Chrome/Chromium install paths, by platform.
-
-    macOS .app bundles and Windows Program Files installs are not on PATH,
-    so `shutil.which` cannot find them. Returns deduplicated candidate paths
-    (empty on Linux, where the PATH names in CHROME_CANDIDATES are the only
-    option). Mirrors routine_scrapper._platform_chrome_candidates.
-    """
-    if sys.platform == "darwin":
-        return [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-    if os.name == "nt":
-        bases = [
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ]
-        paths = []
-        for base in bases:
-            if not base:
-                continue
-            paths.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
-            paths.append(os.path.join(base, "Chromium", "Application", "chrome.exe"))
-        return list(dict.fromkeys(paths))
-    return []
 
 ENV_PLACEHOLDER_IDS = {"your_app_script_id", "YOUR_APP_SCRIPT_ID_GOES_HERE", ""}
 
@@ -236,14 +213,13 @@ def _env_value(env_lines, key):
 
 
 def find_browser():
-    """Return the first installed Chrome/Chromium binary path, or None."""
-    for name in CHROME_CANDIDATES:
-        if shutil.which(name):
-            return name
-    for candidate in _platform_chrome_candidates():
-        if os.path.exists(candidate):
-            return candidate
-    return None
+    """
+    Return the Chrome/Chromium binary the pipeline would launch, or None.
+
+    Delegates to browser_lookup so this check can never disagree with the
+    scraper's own resolution (they previously kept separate candidate lists).
+    """
+    return get_chrome_executable(CHROME_BINARY_PATH)
 
 
 def main():

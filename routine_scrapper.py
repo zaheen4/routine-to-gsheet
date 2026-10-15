@@ -9,10 +9,14 @@ from bs4 import BeautifulSoup
 import os
 import csv
 import re
-import shutil
 from datetime import datetime, timezone
 
 from config import HEADLESS, CHROME_BINARY_PATH, setup_logging
+from browser_lookup import (
+    CHROME_BINARY_NAMES,
+    get_chrome_executable as resolve_chrome_executable,
+    platform_chrome_candidates,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -806,60 +810,18 @@ async def scrape_dashboard_for_user(tab, user_creds, common_urls):
     entries = await extract_dashboard(tab, section_label)
     return entries, semester
 
-CHROME_BINARY_NAMES = ["google-chrome-stable", "google-chrome", "chromium-browser", "chromium"]
-
-def _platform_chrome_candidates():
-    """
-    Well-known Chrome/Chromium install paths, by platform.
-
-    macOS .app bundles and Windows Program Files installs are not on PATH,
-    so `shutil.which` cannot find them. Returns deduplicated candidate paths
-    (empty on Linux, where PATH-scan names above are the only option).
-    """
-    candidates = []
-    if sys.platform == "darwin":
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-    elif os.name == "nt":
-        bases = [
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ]
-        for base in bases:
-            if not base:
-                continue
-            candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
-            candidates.append(os.path.join(base, "Chromium", "Application", "chrome.exe"))
-    seen = set()
-    return [c for c in candidates if not (c in seen or seen.add(c))]
-
 def get_chrome_executable():
     """
     Resolve the exact Chrome binary to launch.
 
-    Precedence: CHROME_BINARY_PATH env override, then a deterministic PATH scan,
-    then well-known per-platform install paths. Passed to nodriver as
-    browser_executable_path so the launched browser always matches what was
-    detected (nodriver has no chromedriver to version-match).
+    Thin wrapper over browser_lookup.get_chrome_executable() - the single source
+    of truth shared with scripts/setup.py and scripts/check_setup.py - supplying
+    this run's CHROME_BINARY_PATH override. Precedence: CHROME_BINARY_PATH env
+    override, then a deterministic PATH scan, then well-known per-platform
+    install paths. Passed to nodriver as browser_executable_path so the launched
+    browser always matches what was detected.
     """
-    if CHROME_BINARY_PATH:
-        if os.path.isfile(CHROME_BINARY_PATH):
-            logger.info("Using Chrome binary from CHROME_BINARY_PATH: %s", CHROME_BINARY_PATH)
-            return CHROME_BINARY_PATH
-        logger.warning("CHROME_BINARY_PATH set but not found: %s", CHROME_BINARY_PATH)
-    for binary in CHROME_BINARY_NAMES:
-        path = shutil.which(binary)
-        if path:
-            return path
-    for candidate in _platform_chrome_candidates():
-        if os.path.isfile(candidate):
-            logger.info("Found Chrome binary at well-known path: %s", candidate)
-            return candidate
-    return None
+    return resolve_chrome_executable(CHROME_BINARY_PATH)
 
 
 async def launch_browser():
