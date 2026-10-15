@@ -26,7 +26,7 @@ def test_scaffold_files_creates_missing(tmp_path):
 def test_scaffold_files_never_overwrites_existing(tmp_path):
     for template_rel in s.TEMPLATE_MAP.values():
         _write(tmp_path, template_rel, "{}")
-    _write(tmp_path, ".env", "APP_SCRIPT_ID=keep-me")
+    _write(tmp_path, ".env", "SPREADSHEET_NAME=keep-me")
     lines = s.scaffold_files(str(tmp_path))
     assert any("exists" in line and ".env" in line for line in lines)
     with open(os.path.join(tmp_path, ".env"), encoding="utf-8") as f:
@@ -150,10 +150,9 @@ def test_validate_teacher_details_not_an_object(tmp_path):
 
 # ----------------------------- validate_env -----------------------------
 
-def test_validate_env_ready(tmp_path):
+def test_validate_env_ok_when_present(tmp_path):
     path = tmp_path / ".env"
-    path.write_text(
-        "SPREADSHEET_NAME=My Sheet\nAPP_SCRIPT_ID=AKfycb...abc\n", encoding="utf-8")
+    path.write_text("SPREADSHEET_NAME=My Sheet\n", encoding="utf-8")
     ok, errors = s.validate_env(str(path))
     assert ok
     assert errors == []
@@ -165,20 +164,15 @@ def test_validate_env_missing_file(tmp_path):
     assert "missing" in errors[0]
 
 
-def test_validate_env_ok_without_spreadsheet_name(tmp_path):
+def test_validate_env_accepts_an_empty_file(tmp_path):
+    # Every value .env can hold has a working default in config.py
+    # (SPREADSHEET_NAME, TARGET_SHEET_NAME, MAX_DATA_AGE_HOURS, LOG_LEVEL), so
+    # there is no required key to check - only the file's presence.
     path = tmp_path / ".env"
-    path.write_text("APP_SCRIPT_ID=AKfycb...abc\n", encoding="utf-8")
+    path.write_text("", encoding="utf-8")
     ok, errors = s.validate_env(str(path))
     assert ok
     assert errors == []
-
-
-def test_validate_env_placeholder_id(tmp_path):
-    path = tmp_path / ".env"
-    path.write_text("APP_SCRIPT_ID=YOUR_APP_SCRIPT_ID_GOES_HERE\n", encoding="utf-8")
-    ok, errors = s.validate_env(str(path))
-    assert not ok
-    assert any("APP_SCRIPT_ID" in e for e in errors)
 
 
 # ----------------------------- find_browser -----------------------------
@@ -228,7 +222,7 @@ def test_check_secret_permissions_flags_world_readable(tmp_path):
 def test_check_secret_permissions_quiet_when_private(tmp_path):
     if os.name == "nt":
         return
-    _write(tmp_path, ".env", "APP_SCRIPT_ID=x")
+    _write(tmp_path, ".env", "SPREADSHEET_NAME=x")
     os.chmod(os.path.join(tmp_path, ".env"), 0o600)
     assert s.check_secret_permissions(str(tmp_path)) == []
 

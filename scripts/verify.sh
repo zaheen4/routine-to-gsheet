@@ -3,10 +3,10 @@
 #
 #   ./scripts/verify.sh
 #
-# Runs, in order: ruff lint, the Apps Script node test suite, the python test
-# suite. Exits non-zero if any step fails. The same script backs the optional
-# pre-commit hook (scripts/install_hooks.sh); GitHub Actions stays off because
-# Cloudflare blocks the logged-in scrape from datacenter IPs.
+# Runs, in order: ruff lint, then the python test suite. Exits non-zero if any
+# step fails. The same script backs the optional pre-commit hook
+# (scripts/install_hooks.sh); GitHub Actions stays off because Cloudflare blocks
+# the logged-in scrape from datacenter IPs.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,13 +35,6 @@ run() {
 
 step "ruff check"
 run "$PYTHON" -m ruff check .
-
-step "apps script tests (node)"
-if command -v node >/dev/null 2>&1; then
-    run node --test "apps_script/tests/**/*.test.js"
-else
-    echo "SKIPPED: node is not installed (needed for the Apps Script tests)"
-fi
 
 step "python tests (pytest)"
 run "$PYTHON" -m pytest tests/ -q

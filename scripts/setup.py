@@ -33,17 +33,14 @@ TEMPLATE_MAP = {
 # templates - the templates are invalid placeholders).
 GOOGLE_KEY_FILES = [
     "google_cloud_keys/service_account_key.json",
-    "google_cloud_keys/oauth_client_secret.json",
 ]
 
 # Files that carry credentials and must not be group/world readable.
 SENSITIVE_FILES = [
     ".env",
-    "token.pickle",
     "configs_to_edit/ucam_login_credentials.json",
     "configs_to_edit/teacher_contact_details.json",
     "google_cloud_keys/service_account_key.json",
-    "google_cloud_keys/oauth_client_secret.json",
 ]
 
 # Owner read/write only.
@@ -54,8 +51,6 @@ REQUIRED_USER_KEYS = ["id", "username", "password", "section_label"]
 # Optional per-account role. Omitting it keeps the positional default
 # (users[0] = primary, the rest = lab_merge).
 VALID_USER_ROLES = ("primary", "lab_merge")
-
-ENV_PLACEHOLDER_IDS = {"your_app_script_id", "YOUR_APP_SCRIPT_ID_GOES_HERE", ""}
 
 
 def resolve_path(rel_path):
@@ -168,35 +163,17 @@ def _env_value(env_lines, key):
 
 
 def validate_env(path):
-    """Check .env for the values the pipeline needs.
+    """Check that .env exists.
 
-    APP_SCRIPT_ID is the only value with no working default (config.py uses a
-    placeholder), so it is the one required in .env. SPREADSHEET_NAME and
-    TARGET_SHEET_NAME fall back to sensible defaults in config.py.
+    Every value it can hold has a working default in config.py
+    (SPREADSHEET_NAME, TARGET_SHEET_NAME, MAX_DATA_AGE_HOURS, LOG_LEVEL), so
+    there is no required key to check - only the file's presence.
 
     Returns (ok, errors).
     """
-    errors = []
     if not os.path.exists(path):
         return False, ["%s is missing (run setup.py to create it)" % path]
-    with open(path, encoding="utf-8") as f:
-        lines = f.readlines()
-
-    app_script_id = _env_value(lines, "APP_SCRIPT_ID")
-    if not app_script_id or app_script_id in ENV_PLACEHOLDER_IDS:
-        errors.append("APP_SCRIPT_ID is unset or still a placeholder (see SETUP.md Phase A6)")
-    return not errors, errors
-
-
-def _env_value(env_lines, key):
-    for line in env_lines or []:
-        stripped = line.strip()
-        if stripped.startswith("#") or "=" not in stripped:
-            continue
-        k, _, v = stripped.partition("=")
-        if k.strip() == key:
-            return v.strip()
-    return None
+    return True, []
 
 
 def find_browser():
@@ -225,7 +202,7 @@ def main():
         if not present:
             ok = False
     if not ok:
-        print("  -> Download these from Google Cloud Console (SETUP.md Phase A3/A5).")
+        print("  -> Download this from Google Cloud Console (SETUP.md Phase A3).")
 
     print("\n[3/6] Browser detection")
     browser = find_browser()
@@ -267,10 +244,10 @@ def main():
 
     print("\n[6/6] Next steps")
     print("  1. Edit configs_to_edit/ucam_login_credentials.json with your UCAM login (SETUP.md Phase B4).")
-    print("  2. Set SPREADSHEET_NAME and APP_SCRIPT_ID in .env (SETUP.md Phase B4).")
+    print("  2. Set SPREADSHEET_NAME in .env if your sheet is not the default (SETUP.md Phase B3).")
     print("  3. Run: .venv/bin/python scripts/check_setup.py  (preflight check)")
     print("  4. Run: .venv/bin/python routine_scrapper.py")
-    print("  5. Run: .venv/bin/python gsheet_formatter.py   (first run opens OAuth)")
+    print("  5. Run: .venv/bin/python gsheet_formatter.py")
 
     print()
     if ok:
