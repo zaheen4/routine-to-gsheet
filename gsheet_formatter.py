@@ -49,6 +49,21 @@ APP_SCRIPT_SCOPES = [
 ]
 TOKEN_PICKLE_FILE = 'token.pickle'
 
+# Credential files are created owner-readable/writable only.
+PRIVATE_FILE_MODE = 0o600
+
+
+def restrict_secret_file_mode(path):
+    """Best-effort chmod 600 on a credential file; never raises.
+
+    token.pickle is a refresh token in the clear, so it should not be left
+    group/world readable (the default umask on most Linux systems is 022).
+    """
+    try:
+        os.chmod(path, PRIVATE_FILE_MODE)
+    except OSError:
+        logger.debug("Could not restrict permissions on '%s'.", path)
+
 
 # [Helper Functions]
 
@@ -317,6 +332,7 @@ def call_apps_script_function(script_id, function_name, client_secrets_file, tok
         
         with open(token_pickle_file, 'wb') as token:
             pickle.dump(creds, token)
+        restrict_secret_file_mode(token_pickle_file)
         logger.info("API credentials cached successfully.")
 
     try:

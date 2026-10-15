@@ -204,6 +204,40 @@ def test_find_browser_macos_app_bundle(monkeypatch):
     assert s.find_browser() == fake
 
 
+# ----------------------------- secret permissions -----------------------------
+
+def test_scaffold_creates_private_files(tmp_path):
+    if os.name == "nt":
+        return  # POSIX permission bits are not meaningful on Windows
+    for template_rel in s.TEMPLATE_MAP.values():
+        _write(tmp_path, template_rel, "{}")
+    s.scaffold_files(str(tmp_path))
+    for real_rel in s.TEMPLATE_MAP:
+        mode = os.stat(os.path.join(tmp_path, real_rel)).st_mode & 0o777
+        assert mode == s.PRIVATE_FILE_MODE, (real_rel, oct(mode))
+
+
+def test_check_secret_permissions_flags_world_readable(tmp_path):
+    if os.name == "nt":
+        return
+    _write(tmp_path, "configs_to_edit/ucam_login_credentials.json", "{}")
+    os.chmod(os.path.join(tmp_path, "configs_to_edit/ucam_login_credentials.json"), 0o644)
+    warnings = s.check_secret_permissions(str(tmp_path))
+    assert any("ucam_login_credentials.json" in w for w in warnings)
+
+
+def test_check_secret_permissions_quiet_when_private(tmp_path):
+    if os.name == "nt":
+        return
+    _write(tmp_path, ".env", "APP_SCRIPT_ID=x")
+    os.chmod(os.path.join(tmp_path, ".env"), 0o600)
+    assert s.check_secret_permissions(str(tmp_path)) == []
+
+
+def test_check_secret_permissions_ignores_absent_files(tmp_path):
+    assert s.check_secret_permissions(str(tmp_path)) == []
+
+
 def test_setup_platform_candidates_macos(monkeypatch):
     monkeypatch.setattr(s.sys, "platform", "darwin")
     candidates = s._platform_chrome_candidates()

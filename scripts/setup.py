@@ -31,6 +31,19 @@ GOOGLE_KEY_FILES = [
     "google_cloud_keys/oauth_client_secret.json",
 ]
 
+# Files that carry credentials and must not be group/world readable.
+SENSITIVE_FILES = [
+    ".env",
+    "token.pickle",
+    "configs_to_edit/ucam_login_credentials.json",
+    "configs_to_edit/teacher_contact_details.json",
+    "google_cloud_keys/service_account_key.json",
+    "google_cloud_keys/oauth_client_secret.json",
+]
+
+# Owner read/write only.
+PRIVATE_FILE_MODE = 0o600
+
 REQUIRED_CREDENTIALS_KEYS = ["users", "login_url", "attendance_dashboard_url"]
 REQUIRED_USER_KEYS = ["id", "username", "password", "section_label"]
 # Optional per-account role. Omitting it keeps the positional default
@@ -89,7 +102,8 @@ def resolve_path(rel_path):
 def scaffold_files(root=PROJECT_ROOT):
     """Copy missing templates to their real names.
 
-    Returns a list of human-readable status lines.
+    Scaffolded files hold credentials (.env, UCAM login), so they are created
+    owner-readable/writable only. Returns a list of human-readable status lines.
     """
     lines = []
     for real_rel, template_rel in TEMPLATE_MAP.items():
@@ -100,8 +114,28 @@ def scaffold_files(root=PROJECT_ROOT):
         template_path = os.path.join(root, template_rel)
         os.makedirs(os.path.dirname(real_path), exist_ok=True)
         shutil.copy2(template_path, real_path)
+        os.chmod(real_path, PRIVATE_FILE_MODE)
         lines.append("created: %s (edit it)" % real_rel)
     return lines
+
+
+def check_secret_permissions(root=PROJECT_ROOT):
+    """Report sensitive files that are readable beyond their owner.
+
+    Returns a list of warning strings (empty when everything is private).
+    """
+    warnings = []
+    for rel in SENSITIVE_FILES:
+        path = os.path.join(root, rel)
+        if not os.path.exists(path):
+            continue
+        mode = os.stat(path).st_mode & 0o777
+        if mode & 0o077:
+            warnings.append(
+                "%s is readable beyond its owner (mode %s): run `chmod 600 %s`"
+                % (rel, oct(mode), rel)
+            )
+    return warnings
 
 
 def validate_credentials_json(path):
@@ -159,7 +193,7 @@ def validate_teacher_details(path):
 
 
 def _env_value(env_lines, key):
-    for line in env_lines:
+    for line in env_lines or []:
         stripped = line.strip()
         if stripped.startswith("#") or "=" not in stripped:
             continue
@@ -190,6 +224,17 @@ def validate_env(path):
     return not errors, errors
 
 
+def _env_value(env_lines, key):
+    for line in env_lines or []:
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        k, _, v = stripped.partition("=")
+        if k.strip() == key:
+            return v.strip()
+    return None
+
+
 def find_browser():
     """Return the first installed Chrome/Chromium binary path, or None."""
     for name in CHROME_CANDIDATES:
@@ -205,11 +250,11 @@ def main():
     root = PROJECT_ROOT
     lines = scaffold_files(root)
 
-    print("\n[1/5] Scaffolded config files")
+    print("\n[1/6] Scaffolded config files")
     for line in lines:
         print("  -", line)
 
-    print("\n[2/5] Google Cloud key files")
+    print("\n[2/6] Google Cloud key files")
     ok = True
     for rel in GOOGLE_KEY_FILES:
         present = os.path.exists(resolve_path(rel))
@@ -219,7 +264,7 @@ def main():
     if not ok:
         print("  -> Download these from Google Cloud Console (SETUP.md Phase A3/A5).")
 
-    print("\n[3/5] Browser detection")
+    print("\n[3/6] Browser detection")
     browser = find_browser()
     if browser:
         print("  - found:", browser)
@@ -227,7 +272,7 @@ def main():
         print("  - none found: install Chrome or Chromium (SETUP.md Phase B2)")
         ok = False
 
-    print("\n[4/5] Configuration validation")
+    print("\n[4/6] Configuration validation")
     env_lines = None
     env_path = resolve_path(".env")
     if os.path.exists(env_path):
@@ -249,7 +294,15 @@ def main():
     if not (cred_ok and teacher_ok and env_ok):
         ok = False
 
-    print("\n[5/5] Next steps")
+    print("\n[5/6] Secret file permissions")
+    perm_warnings = check_secret_permissions(root)
+    if perm_warnings:
+        for warning in perm_warnings:
+            print("  - WARNING:", warning)
+    else:
+        print("  - all credential files are private (owner-only)")
+
+    print("\n[6/6] Next steps")
     print("  1. Edit configs_to_edit/ucam_login_credentials.json with your UCAM login (SETUP.md Phase B4).")
     print("  2. Set SPREADSHEET_NAME and APP_SCRIPT_ID in .env (SETUP.md Phase B4).")
     print("  3. Run: .venv/bin/python scripts/check_setup.py  (preflight check)")

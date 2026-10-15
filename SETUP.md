@@ -117,6 +117,16 @@ This copies the template files to their real names if they're missing:
 
 It will **not** create `google_cloud_keys/*.json` for you (those must be downloaded from Google Cloud in Phase A), but it will tell you if they're missing.
 
+The files it creates — and the Google keys once you drop them in — hold live credentials (your UCAM password, a Google service-account key, an OAuth refresh token), so keep them owner-only:
+
+```bash
+chmod 600 .env token.pickle configs_to_edit/ucam_login_credentials.json \
+  configs_to_edit/teacher_contact_details.json \
+  google_cloud_keys/service_account_key.json google_cloud_keys/oauth_client_secret.json
+```
+
+`scripts/setup.py` creates the files it scaffolds with mode `600` and warns at the end if any credential file is readable beyond its owner (the default umask would leave them world-readable).
+
 ### B4. Fill in the configuration files
 
 **`configs_to_edit/ucam_login_credentials.json`** — edit the real file that `setup.py` created:
@@ -287,6 +297,8 @@ You only need to repeat:
    - `google_cloud_keys/oauth_client_secret.json`
    - `.env`
    - `token.pickle` (or run the formatter once interactively to regenerate it)
+
+   Then lock them down: `chmod 600 .env token.pickle configs_to_edit/*.json google_cloud_keys/*.json`.
 4. Optionally reinstall automation (Phase D): systemd timer (Linux), Task Scheduler (Windows), or the launchd agent (macOS).
 
 Nothing on the Google side changes — the same spreadsheet, service account, OAuth client, and Apps Script deployment are reused.

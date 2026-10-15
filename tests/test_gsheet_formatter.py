@@ -303,6 +303,22 @@ def test_call_apps_script_function_not_headless_calls_run_local_server(monkeypat
     assert result is False  # build() raises on fake creds -> caught by except
 
 
+# ----------------------------- restrict_secret_file_mode -----------------------------
+
+def test_restrict_secret_file_mode_chmods(tmp_path):
+    if os.name == "nt":
+        return  # POSIX permission bits are not meaningful on Windows
+    target = tmp_path / "token.pickle"
+    target.write_bytes(b"secret")
+    os.chmod(target, 0o644)
+    gf.restrict_secret_file_mode(str(target))
+    assert os.stat(target).st_mode & 0o777 == gf.PRIVATE_FILE_MODE
+
+
+def test_restrict_secret_file_mode_tolerates_missing_file(tmp_path):
+    gf.restrict_secret_file_mode(str(tmp_path / "nope.pickle"))  # must not raise
+
+
 # ----------------------------- main: exit code contract -----------------------------
 
 class _FakeGC:
