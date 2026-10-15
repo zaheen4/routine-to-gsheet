@@ -314,13 +314,16 @@ def missing_teacher_initials(all_collected_data, teacher_details):
     return sorted(initial for initial in scraped if initial not in known)
 
 
+LAB_TITLE_RE = re.compile(r"\blab\b", re.IGNORECASE)
+
+
 def build_final_routine(all_collected_data, primary_section, secondary_section, teacher_details):
     """
     Merges per-section scraped data into the final deduplicated routine.
 
     The primary section keeps all courses; the secondary section contributes
-    only lab courses (title contains "lab"). Entries are deduplicated by
-    (CourseCode, Day, TimeSlot, Section).
+    only lab courses (title contains the word "lab"). Entries are deduplicated
+    by (CourseCode, Day, TimeSlot, Section).
     """
     missing = missing_teacher_initials(all_collected_data, teacher_details)
     if missing:
@@ -332,7 +335,7 @@ def build_final_routine(all_collected_data, primary_section, secondary_section, 
     final_routine = []
 
     for item in all_collected_data:
-        is_lab = "lab" in item.get("CourseTitle", "").lower()
+        is_lab = bool(LAB_TITLE_RE.search(item.get("CourseTitle", "")))
         item_section = item.get("UserScrapedSection")
 
         if item_section == primary_section or (item_section == secondary_section and is_lab):

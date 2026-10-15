@@ -303,6 +303,27 @@ def test_build_final_routine_no_secondary():
     assert len(final) == 1
 
 
+def test_build_final_routine_lab_match_needs_a_word_boundary():
+    # "Collaborative"/"Laboratory" merely contain the letters "lab"; only a
+    # standalone "Lab" token identifies a lab course from the secondary account.
+    data = [
+        _item("CSE-3201", "Operating Systems", "B1", "Sun"),
+        _item("CSE-4999", "Collaborative Computing", "B2", "Sun"),
+        _item("CSE-4998", "Laboratory Techniques", "B2", "Mon"),
+        _item("CSE-3212", "Operating Systems Lab", "B2", "Wed"),
+        _item("CSE-3213", "Data Structures LABORATORY", "B2", "Thu"),
+    ]
+    final = rs.build_final_routine(data, "B1", "B2", {})
+    codes = {e["CourseCode"] for e in final}
+    assert codes == {"CSE-3201", "CSE-3212"}
+
+
+def test_build_final_routine_lab_match_is_case_insensitive():
+    data = [_item("CSE-3212", "operating systems lab", "B2", "Wed")]
+    final = rs.build_final_routine(data, "B1", "B2", {})
+    assert [e["CourseCode"] for e in final] == ["CSE-3212"]
+
+
 # ----------------------------- missing_teacher_initials -----------------------------
 
 def test_missing_teacher_initials_returns_unknowns():
