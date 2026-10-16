@@ -1,6 +1,6 @@
 # Lint/format and pytest configuration.
 #
-# Run everything with: scripts/verify.sh  (ruff + node tests + pytest)
+# Run everything with: scripts/verify.sh  (ruff + pytest)
 
 [tool.ruff]
 # Floor for the project's supported Python (the dev environment runs 3.14, so

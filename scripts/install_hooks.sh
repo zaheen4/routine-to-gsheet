@@ -42,4 +42,4 @@ exec "$(git rev-parse --show-toplevel)/scripts/verify.sh"
 EOF
 chmod +x "$HOOK"
 echo "installed $HOOK"
-echo "Commits now run ruff + node tests + pytest. Bypass once with: git commit --no-verify"
+echo "Commits now run ruff + pytest. Bypass once with: git commit --no-verify"
