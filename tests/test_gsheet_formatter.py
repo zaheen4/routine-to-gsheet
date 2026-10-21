@@ -96,6 +96,22 @@ def test_data_age_hours_old():
     assert age > 71
 
 
+def test_data_age_hours_accepts_offset_and_microseconds():
+    # extract_ucam emits datetime.isoformat()-style stamps; strptime("%...Z")
+    # rejected these and the formatter exited 1 on perfectly fresh data.
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    age = gf.data_age_hours(stamp)
+    assert age is not None
+    assert 1.9 < age < 2.1
+
+
+def test_data_age_hours_treats_a_naive_stamp_as_utc():
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=3)).replace(tzinfo=None).isoformat()
+    age = gf.data_age_hours(stamp)
+    assert age is not None
+    assert 2.9 < age < 3.1
+
+
 
 # ----------------------------- shared test entries -----------------------------
 
@@ -427,6 +443,23 @@ def _patch_main(monkeypatch, data=None, gc=None, newmain_ok=True,
 def test_main_returns_zero_when_sync_succeeds(monkeypatch):
     calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
     assert gf.main() == 0
+    assert calls["newmain"] == 1
+
+
+def test_main_publishes_the_path_given_by_data(monkeypatch, tmp_path):
+    calls = _patch_main(monkeypatch, gc=_FakeGC(_main_spreadsheet()))
+    seen = {}
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def recording_load(path):
+        seen["path"] = path
+        return [_entry()], stamp
+
+    monkeypatch.setattr(gf, "load_routine_data", recording_load)
+    custom = tmp_path / "elsewhere" / "routine_data.json"
+
+    assert gf.main(["--data", str(custom)]) == 0
+    assert seen["path"] == str(custom)
     assert calls["newmain"] == 1
 
 

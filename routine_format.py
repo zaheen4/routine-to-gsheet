@@ -173,6 +173,31 @@ def parse_and_format_time(time_str):
         return time_str, BLANK_TIME
 
 
+def parse_time_range_minutes(time_str):
+    """
+    Reduce a portal time slot to ``(start, end)`` minutes from midnight.
+
+    Shares ``_format_one_time`` with the sheet formatter, so the display path and
+    the calendar path can never disagree about AM/PM handling. Either side is
+    ``None`` when that half is blank or unparseable.
+
+    Examples:
+        "11:45 - 1:0"        -> (705, 780)
+        "10:30 AM - 1:0 PM"  -> (630, 780)
+    """
+    if not isinstance(time_str, str) or not time_str.strip():
+        return None, None
+    parts = re.split(r"\s*-\s*", time_str.strip())
+    _start_text, start = _format_one_time(parts[0])
+    end = None
+    if len(parts) > 1 and parts[1].strip():
+        _end_text, end = _format_one_time(parts[1])
+    return (
+        None if start in (BLANK_TIME, UNPARSEABLE_TIME) else start,
+        None if end in (BLANK_TIME, UNPARSEABLE_TIME) else end,
+    )
+
+
 def normalize_day(day):
     """Map a day cell to its sort key (1..7, else the missing/unknown sentinel)."""
     if isinstance(day, str) and day.strip():

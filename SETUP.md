@@ -8,10 +8,11 @@ If you already have a working installation and are moving to a new machine, jump
 
 ## Overview
 
-The pipeline has two parts:
+The pipeline has three parts:
 
-1. **Scraper** (`routine_scrapper.py`) — logs into the UCAM (NITER) student portal with your credentials and scrapes the class-schedule dashboard. Requires a **Chrome or Chromium browser**.
+1. **Scraper** (`extract_ucam.py`) — logs into the UCAM (NITER) student portal with your credentials and reads the official **Student Class Routine Report** (teacher phone/email included). Requires a **Chrome or Chromium browser**.
 2. **Formatter** (`gsheet_formatter.py`) — writes the scraped routine into the `backend` tab of a Google Spreadsheet, then sorts and 12-hour-formats it into the `NewMain` tab. One script writes both tabs, using a **service account**.
+3. **Calendar exporter** (`ics_exporter.py`) — turns the same JSON into `output/routine.ics` for Google Calendar, with a 30-minute reminder per class.
 
 > **Why a service account?** A service account is a robot Google identity: the formatter authenticates server-to-server, with no browser login, no consent screen and no refresh token that can expire mid-week. The only manual step it needs is the one in [A3](#a3-create-a-service-account) — you must **share the spreadsheet** with the service account's email address.
 
@@ -90,8 +91,8 @@ This copies the template files to their real names if they're missing:
 | File | What it is |
 |------|-----------|
 | `configs_to_edit/ucam_login_credentials.json` | Your UCAM login (one `primary` account, plus optionally more `lab_merge` accounts to merge lab schedules) |
-| `configs_to_edit/teacher_contact_details.json` | Optional teacher contact lookup by initials |
-| `.env` | Runtime settings: spreadsheet name, target tab, data-age limit |
+| `configs_to_edit/teacher_contact_details.json` | Legacy/optional: the new engine extracts contacts live, so this file is no longer read |
+| `.env` | Runtime settings: spreadsheet name, target tab, data-age limit, calendar options |
 
 It will **not** create `google_cloud_keys/*.json` for you (those must be downloaded from Google Cloud in Phase A), but it will tell you if they're missing.
 
@@ -120,16 +121,15 @@ chmod 600 .env configs_to_edit/ucam_login_credentials.json \
       "role": "primary"
     }
   ],
-  "login_url": "https://ucam.niter.edu.bd/Security/Login.aspx",
-  "attendance_dashboard_url": "https://ucam.niter.edu.bd/Module/Dashboard/StudentClassAttendanceDashboard.aspx?mmi=40545a1b42555b5c4e63"
+  "login_url": "https://ucam.niter.edu.bd/Security/LogIn.aspx"
 }
 ```
 
 - **One account is enough.** Add further `users[]` entries only if you want to merge lab schedules from other students' accounts (their non-lab courses are ignored).
 - **`role` is optional but recommended:** exactly one account must be `"primary"` (your own section — keeps every course); every other account should be `"lab_merge"` (contributes only its lab courses). Leave `role` out entirely and the old positional behaviour applies: the first account is the primary and the rest are lab_merge.
-- The two URLs are for the NITER portal and usually need no changes.
+- `login_url` is optional and usually needs no change. The report URL is configured separately as `ROUTINE_REPORT_URL` in `.env` (defaults to the NITER report; the `mmi` token is portal-issued, so override it if the portal rotates it).
 
-**`configs_to_edit/teacher_contact_details.json`** — optional. Keyed by the teacher initials that appear in the portal (e.g. `"SS"`), mapping to `FullName` / `Phone` / `Email`. Leave the file empty (`{}`) if you don't need it.
+**`configs_to_edit/teacher_contact_details.json`** — legacy/optional. The report table now includes the teacher's phone and email, so the pipeline no longer reads this file. An empty `{}` is fine.
 
 **`.env`** — set the values that apply to you (see `.env.example` for the full list):
 
@@ -140,11 +140,15 @@ TARGET_SHEET_NAME=backend
 LOG_LEVEL=INFO
 # Optional: refuse to publish scraper output older than N hours (default 48).
 #MAX_DATA_AGE_HOURS=48
+# Optional: override the report URL or calendar settings.
+#ROUTINE_REPORT_URL=https://ucam.niter.edu.bd/Module/schedular/Report/RptStudentClassRoutine.aspx?mmi=...
+#CALENDAR_TIMEZONE=Asia/Dhaka
+#SEMESTER_END=2026-07-31
 ```
 
 > `TARGET_SHEET_NAME` defaults to `backend` and only needs changing if you rename that tab in your spreadsheet (the sorted output always goes to `NewMain`).
 >
-> Keep `HEADLESS=false` on Linux. True headless (`HEADLESS=true`) is detected by Cloudflare, so the portal answers every attempt with "Just a moment..." and the scrape fails. Scheduled and `scripts/run_routine.sh` runs are still invisible: the script launches the scraper under `xvfb-run`, and the scraper passes `--ozone-platform=x11`, so Chrome renders on the virtual X display instead of your screen. Direct `routine_scrapper.py` runs (no `xvfb-run`) open a visible window for debugging.
+> Keep `HEADLESS=false` on Linux. True headless (`HEADLESS=true`) is detected by Cloudflare, so the portal answers every attempt with "Just a moment..." and the scrape fails. Scheduled and `scripts/run_routine.sh` runs are still invisible: the script launches the scraper under `xvfb-run`, and the scraper passes `--ozone-platform=x11`, so Chrome renders on the virtual X display instead of your screen. Direct `extract_ucam.py` runs (no `xvfb-run`) open a visible window for debugging.
 
 ---
 
@@ -153,40 +157,50 @@ LOG_LEVEL=INFO
 ### C1. Scrape the routine
 
 ```bash
-.venv/bin/python routine_scrapper.py
+.venv/bin/python extract_ucam.py --output output/routine_data.json
 ```
 
 On a headless Linux box (no desktop), use `xvfb-run`:
 
 ```bash
-xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" .venv/bin/python routine_scrapper.py
+xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+  .venv/bin/python extract_ucam.py --output output/routine_data.json
 ```
 
-This logs into UCAM, scrapes the dashboard, and writes `output_of_fetched_routine/final_combined_routine.json`.
+This logs into UCAM, reads the official Student Class Routine Report, and writes `output/routine_data.json`. Any failed account aborts the run and leaves no new JSON behind, so partial data can never be published.
 
-> All commands here use `.venv/bin/python` (Unix/macOS); on Windows use `.\venv\Scripts\python.exe`. To run both stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
+> All commands here use `.venv/bin/python` (Unix/macOS); on Windows use `.\venv\Scripts\python.exe`. To run all three stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
 
 ### C2. Format and sync to Google Sheets
 
 ```bash
-.venv/bin/python gsheet_formatter.py
+.venv/bin/python gsheet_formatter.py --data output/routine_data.json
 ```
 
 - There is **no browser step**: the service account authenticates silently, so this also works unattended (scheduled runs included).
 - The formatter writes the raw rows to `backend`, creates `NewMain` if it doesn't exist, then writes the sorted, 12-hour-formatted routine to `NewMain`.
 
-### C3. Verify
+### C3. Export the calendar file
+
+```bash
+.venv/bin/python ics_exporter.py --data output/routine_data.json --output output/routine.ics
+```
+
+Import `output/routine.ics` into Google Calendar (Settings → Import & export). Each class is a weekly event with a 30-minute display reminder. `SEMESTER_END` (or the semester label, e.g. "January-July 2026") stops the recurrence.
+
+### C4. Verify
 
 - [ ] `backend` tab contains the raw routine rows.
 - [ ] `NewMain` tab contains the sorted routine, and headers (if freshly created) at `B3:I3`.
 - [ ] `NewMain` shows a current **Last Updated** date in **column I**, two rows below the last routine row, with the `Made by Z  :)` signature on the row after it.
-- [ ] Both stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without rewriting `NewMain`) on missing/stale/undated data, an auth failure, or a failed `backend` write. Check the log line above the failure.
+- [ ] `output/routine.ics` contains one `VEVENT` per routine slot, each with a `VALARM`.
+- [ ] All three stages exited 0. A non-zero exit means the sheet was **not** updated: the scraper aborts rather than publishing partial data, and the formatter aborts (without rewriting `NewMain`) on missing/stale/undated data, an auth failure, or a failed `backend` write. Check the log line above the failure.
 
 ---
 
 ## Phase D — Optional Automation
 
-Pick the mechanism for your OS. All three run the same two scripts weekly on Saturday at 19:00 and catch up if the machine was off.
+Pick the mechanism for your OS. All three run the same pipeline weekly on Saturday at 19:00 and catch up if the machine was off.
 
 ### D1. Linux — systemd user timer
 
@@ -256,10 +270,10 @@ The pipeline is designed to run on Linux, macOS, and Windows, but "runs on my ma
 | Scraper aborts with **"No Chrome binary found"** | Chrome/Chromium not installed or not on PATH | Install Chrome or Chromium, or set `CHROME_BINARY_PATH` in `.env` to a specific binary. |
 | `scripts/run_routine.sh` exits immediately with **xvfb-run not installed** | The Linux runner now requires a virtual X display | Install the Xvfb package for your distro (the message prints the exact command). |
 | Portal keeps showing **"Just a moment..."** until the scraper times out | `HEADLESS=true` — Cloudflare detects true headless Chrome | Set `HEADLESS=false` and run through `scripts/run_routine.sh` (or `xvfb-run`) so Chrome renders on a real (virtual) X display. |
-| Formatter refuses to publish and the log says the data is **stale** or has **no usable `generated_at`** | The scraper's output is directly from an older run (or is a pre-manifest file) | Re-run `routine_scrapper.py`. If you just upgraded and the JSON predates the run manifest, the formatter will refuse it until a fresh scrape replaces it. `MAX_DATA_AGE_HOURS=0` in `.env` disables the check. |
-| Scraper aborts with **"No valid routine entries left after merging"** | Portal markup changed, or the semester isn't published yet | If the schedule *is* live, inspect the raw panel HTML the scraper dumped to `tmp/` (the log line names the exact file). |
-| `No valid routine entries` (older wording) / `backend` is empty | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
-| A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. Ensure you're on the latest `routine_scrapper.py`. |
+| Formatter refuses to publish and the log says the data is **stale** or has **no usable `generated_at`** | The scraper's output is directly from an older run (or is a pre-manifest file) | Re-run `extract_ucam.py`. If the JSON predates the run manifest, the formatter will refuse it until a fresh scrape replaces it. `MAX_DATA_AGE_HOURS=0` in `.env` disables the check. |
+| Scraper aborts with **"No routine entries were extracted"** or **"Partial extraction"** | Portal markup changed, Cloudflare blocked an account, or the semester isn't published yet | If the schedule *is* live, inspect the HTML the scraper dumped to `tmp/error_log_<account>.html` (the log line names the exact file). Partial runs deliberately write nothing. |
+| `No valid routine entries` / `backend` is empty | Portal hasn't published the current semester's schedule yet | Nothing to fix — the schedule isn't live. Check back later. |
+| A Chrome window pops up on your desktop during a scheduled/manual `run_routine.sh` run | Desktop forces `--ozone-platform=wayland` (e.g. `~/.config/chrome-flags.conf`), so headed Chrome bypasses the Xvfb display | Already fixed in the scraper: it passes `--ozone-platform=x11`, overriding the Wayland flags. |
 | Formatter fails with a **Google API error** on write | The service account is a Viewer, or the sheet was unshared | Re-share the sheet with the service account email as **Editor**. |
 
 ---
@@ -272,9 +286,10 @@ You only need to repeat:
 2. Install Chrome/Chromium (+ Xvfb on Linux for invisible scheduled runs).
 3. Copy these gitignored files from your old machine:
    - `configs_to_edit/ucam_login_credentials.json`
-   - `configs_to_edit/teacher_contact_details.json`
    - `google_cloud_keys/service_account_key.json`
    - `.env`
+
+   (`teacher_contact_details.json` is legacy/optional — the report now carries contacts.)
 
    Then lock them down: `chmod 600 .env configs_to_edit/*.json google_cloud_keys/*.json`.
 4. Optionally reinstall automation (Phase D): systemd timer (Linux), Task Scheduler (Windows), or the launchd agent (macOS).
