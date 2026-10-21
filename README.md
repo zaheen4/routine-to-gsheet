@@ -1,5 +1,7 @@
 # Automated UCAM Class Routine to Google Sheets
 
+> **Archived (October 2026):** superseded by [**zaheen4/academic-routine**](https://github.com/zaheen4/academic-routine), a Rust rewrite with a Telegram bot front end. This repository is kept for reference only; the local automation has been removed and the UCAM portal flow may no longer work.
+
 An automated solution for scraping class schedules from the UCAM web portal and synchronizing them with a Google Spreadsheet.
 
 **New here?** Follow the step-by-step bring-up guide in [**SETUP.md**](SETUP.md) — it covers Google Cloud setup, configuration, first run, and automation.
