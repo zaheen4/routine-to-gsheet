@@ -33,7 +33,8 @@ An automated solution for scraping class schedules from the UCAM web portal and 
 ## Project Structure
 ```text
 project_root/
-├── routine_scrapper.py         # Primary scraping logic for UCAM portal
+├── extract_ucam.py             # Official class-routine report scraper
+├── ics_exporter.py             # Google Calendar (.ics) exporter
 ├── gsheet_formatter.py         # Google Sheets API integration
 ├── routine_format.py           # Sorting / 12-hour formatting / footer stamp
 ├── config.py                   # Central runtime configuration
@@ -43,7 +44,7 @@ project_root/
 ├── tests/                      # Unit test suite (pytest)
 ├── configs_to_edit/            # User configuration directory
 │   ├── ucam_login_credentials.json.example.txt
-│   └── teacher_contact_details.json.example.txt
+│   └── teacher_contact_details.json.example.txt   # legacy/optional
 ├── google_cloud_keys/          # API credentials directory
 │   └── service_account_key.json.example.txt
 ├── scripts/                    # Local automation and helper scripts
@@ -56,7 +57,7 @@ project_root/
 │   ├── routine-automation.service.example
 │   ├── routine-automation.timer.example
 │   └── routine-automation.plist.example
-├── output_of_fetched_routine/  # Local cache for scraped data
+├── output/                     # Generated routine_data.json + routine.ics (.gitkeep tracked)
 ├── pyproject.toml              # ruff + pytest configuration
 ├── requirements.txt            # Runtime dependencies (pinned)
 ├── requirements-dev.txt        # Test/lint dependencies (includes requirements.txt)
@@ -103,16 +104,21 @@ The scraper uses **nodriver** (successor of `undetected-chromedriver`) to drive 
 
 1. **Scrape Routine**:
    ```bash
-   .venv/bin/python routine_scrapper.py
+   .venv/bin/python extract_ucam.py --output output/routine_data.json
    ```
-   *Note: On headless Linux, run via `xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" .venv/bin/python routine_scrapper.py`.*
+   *Note: On headless Linux, run via `xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" .venv/bin/python extract_ucam.py --output output/routine_data.json`.*
 2. **Update Sheets**:
    ```bash
-   .venv/bin/python gsheet_formatter.py
+   .venv/bin/python gsheet_formatter.py --data output/routine_data.json
    ```
    *Note: no browser step — the service account authenticates silently, so this also works unattended.*
+3. **Export the calendar**:
+   ```bash
+   .venv/bin/python ics_exporter.py --data output/routine_data.json --output output/routine.ics
+   ```
+   Import `output/routine.ics` into Google Calendar once; re-import after each refresh (stable UIDs update instead of duplicating).
 
-To run both stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
+To run all three stages in one go, use `scripts/run_routine.sh` (Unix/macOS) or `scripts\run_routine.bat` (Windows).
 
 ---
 
@@ -130,7 +136,7 @@ Install the dev dependencies first (they include the runtime ones):
 .venv/bin/pip install -r requirements-dev.txt
 ```
 
-The python suite covers dashboard parsing, merge logic, browser workflow steps, sheet-building helpers, the sort/format port, and setup validation:
+The python suite covers report parsing, role-aware merge and fail-stop behaviour, sheet-building helpers, the sort/format port, ISO timestamp handling, and the ICS exporter:
 
 ```bash
 .venv/bin/python -m pytest tests/ -q

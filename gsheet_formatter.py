@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import gspread
 
 from config import (
     MAX_DATA_AGE_HOURS,
+    OUTPUT_DIR,
     SPREADSHEET_NAME,
     TARGET_SHEET_NAME,
     setup_logging,
@@ -37,7 +39,11 @@ NEW_MAIN_SHEET_NAME = 'NewMain'
 
 # [Path Constants]
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCRAPED_DATA_JSON_PATH = os.path.join(BASE_DIR, "output_of_fetched_routine", "final_combined_routine.json")
+# Anchored to BASE_DIR for the same reason as the service-account key below: a
+# relative path would resolve against the caller's cwd. `OUTPUT_DIR` itself stays
+# env-configurable.
+_OUTPUT_DIR_PATH = OUTPUT_DIR if os.path.isabs(OUTPUT_DIR) else os.path.join(BASE_DIR, OUTPUT_DIR)
+SCRAPED_DATA_JSON_PATH = os.path.join(_OUTPUT_DIR_PATH, "routine_data.json")
 
 # [Google Cloud Platform Configuration]
 # Anchored to BASE_DIR: the formatter is run from the project root by
@@ -116,11 +122,16 @@ def data_age_hours(generated_at):
     if not generated_at:
         return None
     try:
-        stamp = datetime.strptime(generated_at, "%Y-%m-%dT%H:%M:%SZ")
+        # Accept both the manifest's "…Z" form and a full ISO-8601 stamp with an
+        # offset and microseconds (datetime.isoformat() emits the latter).
+        normalized = generated_at.replace("Z", "+00:00") if isinstance(generated_at, str) else generated_at
+        stamp = datetime.fromisoformat(normalized)
     except (TypeError, ValueError):
         logger.error("Unparseable 'generated_at' value: %r", generated_at)
         return None
-    return (datetime.now(timezone.utc) - stamp.replace(tzinfo=timezone.utc)).total_seconds() / 3600.0
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds() / 3600.0
 
 
 def authenticate_gsheet(service_account_json_path):
@@ -318,9 +329,14 @@ def write_newmain_sheet(worksheet, entries, now=None):
 
 # [Main Execution]
 
-def main():
+def main(argv=None):
     """
     Run the sheet sync workflow.
+
+    Args:
+        argv: CLI arguments (without the program name). Defaults to ``[]`` so
+            existing callers/tests can invoke ``main()`` directly; the
+            ``__main__`` block passes ``sys.argv[1:]``.
 
     Returns:
         int: Process exit code - 0 only when the sheet was fully updated,
@@ -329,10 +345,19 @@ def main():
         real sync apart from a no-op; every failure path used to return None
         and exit 0, so a broken sync looked identical to a good one.
     """
+    parser = argparse.ArgumentParser(description="Publish the scraped routine to Google Sheets.")
+    parser.add_argument(
+        "--data",
+        default=SCRAPED_DATA_JSON_PATH,
+        help="Routine manifest to publish (default: %(default)s)",
+    )
+    args = parser.parse_args(argv if argv is not None else [])
+    data_path = args.data
+
     logger.info("Initializing Google Sheets formatting workflow...")
 
     # 1. Load data source
-    routine_data, generated_at = load_routine_data(SCRAPED_DATA_JSON_PATH)
+    routine_data, generated_at = load_routine_data(data_path)
     if not routine_data:
         logger.error("Data source empty. Aborting sync.")
         return 1
@@ -343,14 +368,14 @@ def main():
     if age_hours is None:
         logger.error(
             "Data source has no usable 'generated_at' timestamp, so its freshness "
-            "cannot be verified. Re-run routine_scrapper.py to regenerate '%s'.",
-            SCRAPED_DATA_JSON_PATH,
+            "cannot be verified. Re-run extract_ucam.py to regenerate '%s'.",
+            data_path,
         )
         return 1
     if MAX_DATA_AGE_HOURS > 0 and age_hours > MAX_DATA_AGE_HOURS:
         logger.error(
             "Refusing to publish stale data: generated %.1f hours ago (limit %d). "
-            "Run routine_scrapper.py first.",
+            "Run extract_ucam.py first.",
             age_hours,
             MAX_DATA_AGE_HOURS,
         )
@@ -448,4 +473,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

@@ -16,17 +16,24 @@ if exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-echo Starting routine scraper...
-"%PYTHON_EXEC%" routine_scrapper.py
+echo Starting routine scraper (official class routine report)...
+"%PYTHON_EXEC%" extract_ucam.py --output output/routine_data.json
 if errorlevel 1 (
-    echo Scraper failed. Skipping formatter.
+    echo Scraper failed. Skipping formatter and calendar export.
     exit /b 1
 )
 
 echo Scraper finished. Starting gsheet formatter...
-"%PYTHON_EXEC%" gsheet_formatter.py
+"%PYTHON_EXEC%" gsheet_formatter.py --data output/routine_data.json
 if errorlevel 1 (
     echo Formatter failed.
+    exit /b 1
+)
+
+echo Formatter finished. Writing calendar file...
+"%PYTHON_EXEC%" ics_exporter.py --data output/routine_data.json --output output/routine.ics
+if errorlevel 1 (
+    echo Calendar export failed.
     exit /b 1
 )
 

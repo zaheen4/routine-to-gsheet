@@ -17,6 +17,9 @@ google_cloud_keys/service_account_key.json
 google_cloud_keys/oauth_client_secret.json
 
 # Ignore generated output and temporary folders
+output/*
+!output/.gitkeep
+# Legacy location, kept ignored during the migration window.
 output_of_fetched_routine/
 tmp/
 

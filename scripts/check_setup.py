@@ -17,12 +17,12 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from config import HEADLESS, SPREADSHEET_NAME, setup_logging
+from browser_lookup import get_chrome_executable
+from config import CHROME_BINARY_PATH, HEADLESS, SPREADSHEET_NAME, setup_logging
 from gsheet_formatter import (
     GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
     authenticate_gsheet,
 )
-from routine_scrapper import get_chrome_executable
 
 setup_logging()
 
@@ -88,7 +88,7 @@ def main():
                   "sheet is shared (Editor) with %s" % (e, client_email))
 
     print("\nScraper environment (informational - warnings never block)")
-    chrome = get_chrome_executable()
+    chrome = get_chrome_executable(CHROME_BINARY_PATH)
     if chrome:
         print("  [OK]     Chrome binary detected: %s" % chrome)
     else:
@@ -112,7 +112,8 @@ def main():
     if problems:
         print("Found %d issue(s). See SETUP.md troubleshooting table." % len(problems))
         return 1
-    print("All checks passed. You're ready to run routine_scrapper.py then gsheet_formatter.py.")
+    print("All checks passed. You're ready to run extract_ucam.py, "
+          "gsheet_formatter.py and ics_exporter.py (or scripts/run_routine.sh).")
     return 0
 
 

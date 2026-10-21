@@ -146,6 +146,43 @@ def test_parse_and_format_time_keeps_garbage_in_a_slot_with_an_end_time():
     assert rf.parse_and_format_time("9:0 - xyz") == ("9:00 AM - xyz", 540)
 
 
+def test_parse_and_format_time_keeps_explicit_mixed_periods():
+    # The report viewer emits explicit periods on both sides; the heuristic must
+    # not override them.
+    assert rf.parse_and_format_time("10:30 AM - 1:0 PM") == ("10:30 AM - 1:00 PM", 630)
+    assert rf.parse_and_format_time("1:30 PM - 4:0 PM") == ("1:30 PM - 4:00 PM", 810)
+    assert rf.parse_and_format_time("8:0 AM - 9:15 AM") == ("8:00 AM - 9:15 AM", 480)
+
+
+def test_parse_and_format_time_sorts_am_before_pm_across_a_day():
+    slots = ["1:30 PM - 4:0 PM", "8:0 AM - 9:15 AM", "10:30 AM - 1:0 PM"]
+    sortable = sorted(rf.parse_and_format_time(slot)[1] for slot in slots)
+    assert sortable == [480, 630, 810]
+
+
+# ----------------------------- parse_time_range_minutes -----------------------------
+
+def test_parse_time_range_minutes_handles_ampm_less_slots():
+    assert rf.parse_time_range_minutes("11:45 - 1:0") == (705, 780)
+
+
+def test_parse_time_range_minutes_handles_explicit_periods():
+    assert rf.parse_time_range_minutes("10:30 AM - 1:0 PM") == (630, 780)
+    assert rf.parse_time_range_minutes("1:30 PM - 4:0 PM") == (810, 960)
+
+
+def test_parse_time_range_minutes_returns_none_for_the_missing_side():
+    assert rf.parse_time_range_minutes("9:15 AM") == (555, None)
+    assert rf.parse_time_range_minutes("9:0 - ") == (540, None)
+
+
+def test_parse_time_range_minutes_returns_none_for_unparseable_input():
+    assert rf.parse_time_range_minutes("TBA") == (None, None)
+    assert rf.parse_time_range_minutes("") == (None, None)
+    assert rf.parse_time_range_minutes(None) == (None, None)
+    assert rf.parse_time_range_minutes(5) == (None, None)
+
+
 # ----------------------------- normalize_day -----------------------------
 
 def test_normalize_day_maps_each_weekday():

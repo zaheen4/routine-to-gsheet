@@ -46,7 +46,7 @@ SENSITIVE_FILES = [
 # Owner read/write only.
 PRIVATE_FILE_MODE = 0o600
 
-REQUIRED_CREDENTIALS_KEYS = ["users", "login_url", "attendance_dashboard_url"]
+REQUIRED_CREDENTIALS_KEYS = ["users", "login_url"]
 REQUIRED_USER_KEYS = ["id", "username", "password", "section_label"]
 # Optional per-account role. Omitting it keeps the positional default
 # (users[0] = primary, the rest = lab_merge).
@@ -246,8 +246,9 @@ def main():
     print("  1. Edit configs_to_edit/ucam_login_credentials.json with your UCAM login (SETUP.md Phase B4).")
     print("  2. Set SPREADSHEET_NAME in .env if your sheet is not the default (SETUP.md Phase B3).")
     print("  3. Run: .venv/bin/python scripts/check_setup.py  (preflight check)")
-    print("  4. Run: .venv/bin/python routine_scrapper.py")
+    print("  4. Run: .venv/bin/python extract_ucam.py")
     print("  5. Run: .venv/bin/python gsheet_formatter.py")
+    print("  6. Run: .venv/bin/python ics_exporter.py")
 
     print()
     if ok:
